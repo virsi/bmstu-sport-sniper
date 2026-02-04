@@ -1,0 +1,14 @@
+services:
+  bot:
+    build: .
+    container_name: bmstu_sniper
+    restart: unless-stopped  # Если бот упадет, докер его поднимет сам
+    env_file:
+      - .env
+    volumes:
+      # Мапим файл кук, чтобы не логиниться после перезапуска
+      - ./cookies:/app/cookies
+    environment:
+      # Явно указываем путь к хрому и драйверу (для надежности)
+      - CHROME_BIN=/usr/bin/chromium
+      - CHROMEDRIVER_PATH=/usr/bin/chromedriver
