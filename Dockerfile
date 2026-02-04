@@ -22,5 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 3. Копируем код бота
 COPY main.py .
 
+COPY teachers.json .
+
 # Запускаем бота
 CMD ["python", "main.py"]
