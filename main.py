@@ -5,12 +5,9 @@ import time
 import pickle
 import hashlib
 import logging
-import requests
 import threading
 import re
-from bs4 import BeautifulSoup
-from datetime import datetime
-from zoneinfo import ZoneInfo
+import requests
 from dotenv import load_dotenv
 
 from selenium import webdriver
@@ -18,27 +15,8 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 
-
-options = webdriver.ChromeOptions()
-options.add_argument("--headless=new")
-options.add_argument("--no-sandbox")  # ОБЯЗАТЕЛЬНО для Docker
-options.add_argument("--disable-dev-shm-usage")  # ОБЯЗАТЕЛЬНО для Docker
-options.add_argument("--disable-gpu")
-options.add_argument("--window-size=1920,1080")
-# Убираем использование webdriver-manager для поиска бинарника,
-# так как мы установили его через apt-get в Dockerfile
-options.binary_location = "/usr/bin/chromium"
-
-LAST_UPDATE_ID = 0
-LAST_SLOTS_CHECK = 0
-SLOTS_CHECK_INTERVAL = 180
-
-RATINGS_URL = "https://studizba.com/hs/mgtu-im-baumana/teachers/fof-1-fizicheskoe-vospitanie/"
-BASE_STUDIZBA = "https://studizba.com"
-TEACHER_RATINGS = {} # Глобальный кэш
-
+# --- Конфигурация Логирования ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -46,29 +24,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-basedir = os.path.abspath(os.path.dirname(__file__))
-load_dotenv(os.path.join(basedir, '.env'))
+# --- Загрузка окружения ---
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+load_dotenv(os.path.join(BASE_DIR, '.env'))
 
-# Конфигурация
+# Переменные окружения
 TELEGRAM_TOKEN = os.getenv("TG_TOKEN")
 CHAT_ID = os.getenv("TG_CHAT_ID")
 USERNAME = os.getenv("BMSTU_LOGIN")
 PASSWORD = os.getenv("BMSTU_PASSWORD")
 SEMESTER_UUID = os.getenv("SEMESTER_UUID")
 
+# Пути к драйверам (из Docker Compose)
+CHROME_BIN = os.getenv("CHROME_BIN", "/usr/bin/chromium")
+CHROMEDRIVER_PATH = os.getenv("CHROMEDRIVER_PATH", "/usr/bin/chromedriver")
+
 if not all([TELEGRAM_TOKEN, CHAT_ID, USERNAME, PASSWORD, SEMESTER_UUID]):
     logger.critical("Configuration error: Check .env file for missing variables.")
     sys.exit(1)
 
+# --- Константы ---
 API_URL = f"https://lks.bmstu.ru/lks-back/api/v1/fv/{SEMESTER_UUID}/groups"
 TARGET_URL = "https://lks.bmstu.ru/profile"
-COOKIE_DIR = os.path.join(basedir, "cookies")
+COOKIE_DIR = os.path.join(BASE_DIR, "cookies")
 COOKIE_FILE = os.path.join(COOKIE_DIR, "bmstu_cookies.pkl")
+TEACHERS_FILE = os.path.join(BASE_DIR, 'teachers.json')
 
+SLOTS_CHECK_INTERVAL = 180  # Интервал проверки слотов (сек)
+
+# Глобальные переменные состояния
+LAST_UPDATE_ID = 0
 KNOWN_SLOTS = set()
+TEACHER_RATINGS = {}
 
 
 def send_telegram(text, parse_mode=None):
+    """Отправляет сообщение в Telegram."""
     try:
         data = {"chat_id": CHAT_ID, "text": text}
         if parse_mode:
@@ -85,24 +76,22 @@ def send_telegram(text, parse_mode=None):
 
 
 def update_cookies_via_selenium():
-    """Выполняет авторизацию через Selenium headless-браузер для обновления сессии."""
+    """
+    Запускает headless-браузер, логинится в ЛКС и сохраняет cookies.
+    Использует настройки путей из переменных окружения (для Docker).
+    """
     logger.info("Session expired. Initiating re-login via Selenium...")
 
     options = webdriver.ChromeOptions()
+    options.binary_location = CHROME_BIN
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("--disable-dev-shm-usage")
-    options.binary_location = "/usr/bin/chromium"
+    options.add_argument("--disable-blink-features=AutomationControlled")
 
-    chrome_bin = os.environ.get("CHROME_BIN")
-    if chrome_bin:
-        options.binary_location = chrome_bin
-
-    system_driver = os.environ.get("CHROMEDRIVER_PATH")
-    service = Service(executable_path="/usr/bin/chromedriver")
+    service = Service(executable_path=CHROMEDRIVER_PATH)
     driver = None
 
     try:
@@ -110,14 +99,15 @@ def update_cookies_via_selenium():
         driver.get(TARGET_URL)
         wait = WebDriverWait(driver, 25)
 
+        # Авторизация
         wait.until(EC.visibility_of_element_located((By.ID, "username"))).send_keys(USERNAME)
         driver.find_element(By.ID, "password").send_keys(PASSWORD)
         driver.find_element(By.ID, "kc-login").click()
 
-        # Ожидание редиректа на профиль как признак успеха
+        # Ждем редиректа как подтверждения входа
         wait.until(EC.url_contains("lks.bmstu.ru/profile"))
 
-        time.sleep(3) # Небольшая пауза для прогрузки cookies
+        # Сохраняем куки
         if not os.path.exists(COOKIE_DIR):
             os.makedirs(COOKIE_DIR)
 
@@ -125,18 +115,22 @@ def update_cookies_via_selenium():
             pickle.dump(driver.get_cookies(), f)
 
         logger.info("Cookies successfully updated.")
+
     except Exception as e:
         logger.error(f"Selenium login failed: {e}")
+        raise e  # Пробрасываем ошибку выше
     finally:
         if driver:
             driver.quit()
 
 
 def get_session():
+    """Создает сессию requests с загруженными куками."""
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     })
+
     if os.path.exists(COOKIE_FILE):
         try:
             with open(COOKIE_FILE, "rb") as f:
@@ -145,14 +139,17 @@ def get_session():
                     session.cookies.set(cookie['name'], cookie['value'])
         except Exception as e:
             logger.warning(f"Could not load cookies: {e}")
-            # Если куки плохие, лучше удалить файл
-            if os.path.exists(COOKIE_FILE): os.remove(COOKIE_FILE)
+            # Удаляем битый файл
+            try:
+                os.remove(COOKIE_FILE)
+            except OSError:
+                pass
 
     return session
 
 
 def generate_slot_id(item):
-    """Генерирует уникальный ID слота на основе ID API или хеша параметров."""
+    """Генерирует уникальный хеш для слота, чтобы отличать новые от старых."""
     if item.get('id'):
         return str(item.get('id'))
 
@@ -166,52 +163,52 @@ def generate_slot_id(item):
 
 
 def normalize_name(name):
-    """Приводит ФИО к формату 'Фамилия И.О.' для сопоставления."""
-    if not name: return ""
+    """
+    Приводит ФИО к формату 'Фамилия И.О.' для поиска в базе рейтингов.
+    Пример: 'Иванов Иван Иванович' -> 'Иванов И.И.'
+    """
+    if not name:
+        return ""
     # Убираем лишние пробелы и разбиваем
     parts = re.sub(r'\s+', ' ', name.strip()).split()
     if len(parts) >= 3:
-        # Иванов Иван Иванович -> Иванов И.И.
         return f"{parts[0]} {parts[1][0]}.{parts[2][0]}."
     elif len(parts) == 2:
-        # Иванов Иван -> Иванов И.
         return f"{parts[0]} {parts[1][0]}."
     return name
 
 
-def fetch_teacher_ratings():
-    """Загружает рейтинги из локального JSON-файла."""
-    file_path = os.path.join(basedir, 'teachers.json')
+def load_teacher_ratings():
+    """Загружает базу преподавателей из JSON."""
     data = {}
     try:
-        if os.path.exists(file_path):
-            with open(file_path, 'r', encoding='utf-8') as f:
+        if os.path.exists(TEACHERS_FILE):
+            with open(TEACHERS_FILE, 'r', encoding='utf-8') as f:
                 raw_data = json.load(f)
                 for name, info in raw_data.items():
-                    # При загрузке сразу делаем ключи и нормализованные имена
+                    # Сохраняем и полное имя, и нормализованное для гибкости поиска
                     data[name.lower()] = info
                     data[normalize_name(name).lower()] = info
             logger.info(f"Loaded {len(raw_data)} teachers from JSON.")
         else:
-            logger.error("teachers.json not found! Ratings will not be displayed.")
+            logger.warning("teachers.json not found! Ratings will be unavailable.")
     except Exception as e:
         logger.error(f"Failed to load teachers.json: {e}")
     return data
 
 
 def find_teacher_info(name):
-    """Ищет данные в кэше по полному ФИО или сокращенному."""
-    if not name: return None
+    """Ищет преподавателя в кэше рейтингов."""
+    if not name:
+        return None
     name_lower = name.lower()
     norm_name = normalize_name(name).lower()
-
-    # Сначала ищем точное совпадение, потом по инициалам
     return TEACHER_RATINGS.get(name_lower) or TEACHER_RATINGS.get(norm_name)
 
 
-def format_message(new_items):
-    """Формирует читаемое сообщение с учетом рейтинга."""
-    msg_lines = ["<b>🔥 ДОСТУПНЫ НОВЫЕ СЛОТЫ!</b>\n"]
+def format_message(new_items, title="🔥 ДОСТУПНЫ НОВЫЕ СЛОТЫ!"):
+    """Формирует HTML-сообщение для Telegram."""
+    msg_lines = [f"<b>{title}</b>\n"]
 
     for item in new_items:
         name = item.get('section') or "Тренировка"
@@ -225,202 +222,190 @@ def format_message(new_items):
         t_info = find_teacher_info(teacher)
         if t_info:
             rating = t_info.get('rating', '??')
-            # Используем .get('url'), чтобы не упасть, если ссылки нет
             url = t_info.get('url')
-
             rating_display = f"⭐️ Рейтинг: <b>{rating}</b>"
             if url:
-                rating_display += f"\n🔗 <a href='{url}'>Профиль на Studizba</a>"
+                rating_display += f" (<a href='{url}'>Studizba</a>)"
         else:
             rating_display = "ℹ️ Рейтинг: <i>не найден</i>"
 
         card = (
             f"🏟 <b>{name}</b>\n"
-            f"🗓  {day} |⏰  {time_slot}\n"
-            f"📍  {place}\n"
-            f"👨‍🏫  {teacher}\n"
+            f"🗓 {day} | ⏰ {time_slot}\n"
+            f"📍 {place}\n"
+            f"👨‍🏫 {teacher}\n"
             f"{rating_display}\n"
-            f"🟢  Свободно мест: <b>{vacancy}</b>"
+            f"🟢 Свободно мест: <b>{vacancy}</b>"
         )
         msg_lines.append(card)
 
     return "\n\n".join(msg_lines)
 
 
-def check_slots():
+def get_all_available_slots():
+    """Делает запрос к API для получения ВСЕХ текущих слотов (для команды /check)."""
+    session = get_session()
+    slots = []
+    try:
+        response = session.get(API_URL, timeout=15)
+
+        # Если 401, пробуем обновить токен, но не рекурсивно, чтобы не зависнуть
+        if response.status_code in [401, 403]:
+            logger.warning("Token expired during /check command.")
+            try:
+                update_cookies_via_selenium()
+                # Повторный запрос с новой сессией
+                session = get_session()
+                response = session.get(API_URL, timeout=15)
+            except Exception:
+                return []
+
+        if response.status_code == 200:
+            days_list = response.json() or []
+            for day_data in days_list:
+                for group in day_data.get('groups', []):
+                    if int(group.get('vacancy', 0)) > 0:
+                        slots.append(group)
+    except Exception as e:
+        logger.error(f"Error fetching slots manual check: {e}")
+
+    return slots
+
+
+def check_slots_job():
+    """Основная периодическая задача проверки слотов."""
     global KNOWN_SLOTS
     session = get_session()
 
     try:
-        # 1. Делаем реальный запрос к API
         response = session.get(API_URL, timeout=15)
 
-        # 2. Проверяем авторизацию
         if response.status_code in [401, 403]:
-            logger.warning("Access denied (401/403). Token expired.")
+            logger.warning("Access denied (401/403). Updating cookies...")
             update_cookies_via_selenium()
             return
 
-        # 3. Проверяем общие ошибки сервера
         if response.status_code != 200:
             logger.error(f"API Error: Status {response.status_code}")
             return
 
-        # 4. Получаем данные
         days_list = response.json()
-
         if not days_list:
-            logger.debug("Received empty schedule list.")
             return
 
         current_slots_map = {}
         new_slots_data = []
 
-        # 5. Парсинг структуры: Список Дней -> Список Групп
         for day_data in days_list:
             groups = day_data.get('groups', [])
             for group in groups:
                 slot_id = generate_slot_id(group)
                 current_slots_map[slot_id] = group
 
-                vacancy = int(group.get('vacancy', 0))
-                if vacancy > 0:
-                    # Если слот новый (его ID нет в KNOWN_SLOTS)
+                if int(group.get('vacancy', 0)) > 0:
+                    # Если слот видим впервые
                     if slot_id not in KNOWN_SLOTS:
                         new_slots_data.append(group)
                         KNOWN_SLOTS.add(slot_id)
 
-        # 6. Очистка старых ID (чтобы память не росла бесконечно)
+        # Garbage Collector: удаляем из памяти ID слотов, которые исчезли из расписания
         KNOWN_SLOTS.intersection_update(current_slots_map.keys())
 
-        # 7. Отправка уведомлений
         if new_slots_data:
-            logger.info(f"Found {len(new_slots_data)} new slots. Sending notification.")
+            logger.info(f"New slots found: {len(new_slots_data)}")
             text = format_message(new_slots_data)
             link = "https://lks.bmstu.ru/fv/new-record"
-            full_text = f"{text}\n\n<a href='{link}'><b>ПЕРЕЙТИ К ЗАПИСИ</b></a>"
+            full_text = f"{text}\n\n<a href='{link}'><b>✍️ ЗАПИСАТЬСЯ</b></a>"
             send_telegram(full_text, parse_mode="HTML")
         else:
-            logger.info("Check completed. No new slots found.")
+            logger.debug("No new slots.")
 
     except Exception as e:
-        logger.error(f"Unexpected error during check: {e}")
+        logger.error(f"Job error: {e}")
 
 
-def get_all_available_slots():
-    """Возвращает список всех доступных для записи слотов (vacancy > 0)."""
-    session = get_session()
-    slots = []
-
-    try:
-        response = session.get(API_URL, timeout=15)
-
-        if response.status_code in [401, 403]:
-            logger.warning("Access denied while fetching slots for /start.")
-            update_cookies_via_selenium()
-            return []
-
-        if response.status_code != 200:
-            logger.error(f"API Error while fetching slots: {response.status_code}")
-            return []
-
-        days_list = response.json() or []
-
-        for day_data in days_list:
-            for group in day_data.get('groups', []):
-                if int(group.get('vacancy', 0)) > 0:
-                    slots.append(group)
-
-    except Exception as e:
-        logger.error(f"Error fetching slots for /start: {e}")
-
-    return slots
-
-
-def handle_start_command():
-    """Обрабатывает команду /start (мгновенный ответ)."""
-    logger.info("Processing /start command")
-    send_telegram(
-        "Привет! Я слежу за свободными местами на физкультуру.\n\n"
-        "Чтобы посмотреть список доступных записей прямо сейчас, нажмите /check"
-    )
-
+# --- Обработчики Telegram ---
 
 def handle_check_command():
-    """Обрабатывает команду /check (запрос актуальных данных)."""
-    logger.info("Processing /check command")
-
-    # Можно отправить промежуточное сообщение, чтобы пользователь видел - процесс идет
-    # send_telegram("🔍 Проверяю актуальные слоты, подождите...")
-
+    """Обработка команды /check."""
+    logger.info("Command /check received.")
     slots = get_all_available_slots()
 
     if not slots:
-        send_telegram("❌ На данный момент доступных записей нет.")
+        send_telegram("❌ Доступных мест пока нет.")
         return
 
-    text = format_message(slots)
+    # Если слотов слишком много, Telegram может не пропустить одно сообщение (лимит 4096 символов)
+    # Берем первые 10 для безопасности
+    text = format_message(slots[:10], title="🔍 АКТУАЛЬНЫЕ СЛОТЫ (Топ-10)")
     link = "https://lks.bmstu.ru/fv/new-record"
-    full_text = f"{text}\n\n<a href='{link}'><b>ПЕРЕЙТИ К ЗАПИСИ</b></a>"
+
+    if len(slots) > 10:
+        text += f"\n\n<i>...и еще {len(slots)-10} слотов.</i>"
+
+    full_text = f"{text}\n\n<a href='{link}'><b>✍️ ЗАПИСАТЬСЯ</b></a>"
     send_telegram(full_text, parse_mode="HTML")
 
 
-def check_telegram_commands():
+def telegram_poller():
+    """Поток для прослушивания команд Telegram (Long Polling вручную)."""
     global LAST_UPDATE_ID
-    try:
-        response = requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
-            params={"offset": LAST_UPDATE_ID + 1, "timeout": 1},
-            timeout=5
-        )
-        if response.status_code == 200:
-            updates = response.json().get("result", [])
-            for update in updates:
-                LAST_UPDATE_ID = update["update_id"]
-                if "message" in update and "text" in update["message"]:
-                    cmd = update["message"]["text"].strip().lower()
+    logger.info("Telegram listener started.")
 
-                    if cmd == "/start":
-                        handle_start_command()
-                    elif cmd == "/check":
-                        handle_check_command()
-
-    except Exception as e:
-        logger.error(f"Error in commands thread: {e}")
-
-
-def telegram_loop():
-    """Бесконечный цикл для мгновенной обработки команд"""
-    logger.info("Telegram command listener started.")
     while True:
-        check_telegram_commands()
-        time.sleep(0.5) # Минимальная пауза, чтобы не спамить CPU
+        try:
+            # Делаем запрос к API Telegram
+            response = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+                params={"offset": LAST_UPDATE_ID + 1, "timeout": 30}, # Long polling 30 сек
+                timeout=35
+            )
+
+            if response.status_code == 200:
+                result = response.json().get("result", [])
+                for update in result:
+                    LAST_UPDATE_ID = update["update_id"]
+
+                    if "message" in update and "text" in update["message"]:
+                        chat_id = str(update["message"]["chat"]["id"])
+                        text = update["message"]["text"].strip().lower()
+
+                        # Реагируем только на сообщения из нужного чата
+                        if chat_id == CHAT_ID:
+                            if text == "/start":
+                                send_telegram("👋 Привет! Я бот для физры.\nЖми /check для проверки мест.")
+                            elif text == "/check":
+                                handle_check_command()
+        except Exception as e:
+            logger.error(f"Telegram polling error: {e}")
+            time.sleep(5) # Пауза перед ретраем при ошибке сети
+
+        time.sleep(0.5)
 
 
 def main():
     global TEACHER_RATINGS
-    # 1. Сначала запускаем поток команд, чтобы /check работал сразу
-    threading.Thread(target=telegram_loop, daemon=True).start()
 
-    # 2. Парсим рейтинги
-    try:
-        TEACHER_RATINGS = fetch_teacher_ratings()
-    except:
-        send_telegram("⚠️ Рейтинги не загружены.")
+    # 1. Загружаем рейтинги
+    TEACHER_RATINGS = load_teacher_ratings()
 
-    # 3. Проверка куки
+    # 2. Проверяем наличие кук, если нет - создаем
     if not os.path.exists(COOKIE_FILE):
         try:
             update_cookies_via_selenium()
-        except Exception as e:
-            logger.error(f"Critical error during initial login: {e}")
-            # Не останавливаем бота, чтобы /check работал, но логируем
+        except Exception:
+            logger.error("Initial login failed. Bot will retry later.")
 
-    # 4. Основной цикл
+    # 3. Запускаем Telegram-бота в отдельном потоке (daemon=True, чтобы закрылся вместе с основным)
+    tg_thread = threading.Thread(target=telegram_poller, daemon=True)
+    tg_thread.start()
+
+    logger.info("Main loop started.")
+
+    # 4. Основной цикл проверки слотов
     while True:
-        check_slots()
+        check_slots_job()
         time.sleep(SLOTS_CHECK_INTERVAL)
-
 
 if __name__ == "__main__":
     main()
