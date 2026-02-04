@@ -7,6 +7,8 @@ import hashlib
 import logging
 import requests
 import threading
+import re
+from bs4 import BeautifulSoup
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -19,9 +21,23 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 
+options = webdriver.ChromeOptions()
+options.add_argument("--headless=new")
+options.add_argument("--no-sandbox")  # ОБЯЗАТЕЛЬНО для Docker
+options.add_argument("--disable-dev-shm-usage")  # ОБЯЗАТЕЛЬНО для Docker
+options.add_argument("--disable-gpu")
+options.add_argument("--window-size=1920,1080")
+# Убираем использование webdriver-manager для поиска бинарника,
+# так как мы установили его через apt-get в Dockerfile
+options.binary_location = "/usr/bin/chromium"
+
 LAST_UPDATE_ID = 0
 LAST_SLOTS_CHECK = 0
 SLOTS_CHECK_INTERVAL = 180
+
+RATINGS_URL = "https://studizba.com/hs/mgtu-im-baumana/teachers/fof-1-fizicheskoe-vospitanie/"
+BASE_STUDIZBA = "https://studizba.com"
+TEACHER_RATINGS = {} # Глобальный кэш
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,15 +94,17 @@ def update_cookies_via_selenium():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-dev-shm-usage")
+    options.binary_location = "/usr/bin/chromium"
 
     chrome_bin = os.environ.get("CHROME_BIN")
     if chrome_bin:
         options.binary_location = chrome_bin
 
     system_driver = os.environ.get("CHROMEDRIVER_PATH")
-    service = Service(system_driver) if system_driver and os.path.exists(system_driver) else Service(ChromeDriverManager().install())
-
+    service = Service(executable_path="/usr/bin/chromedriver")
     driver = None
+
     try:
         driver = webdriver.Chrome(service=service, options=options)
         driver.get(TARGET_URL)
@@ -122,10 +140,14 @@ def get_session():
     if os.path.exists(COOKIE_FILE):
         try:
             with open(COOKIE_FILE, "rb") as f:
-                for cookie in pickle.load(f):
+                cookies = pickle.load(f)
+                for cookie in cookies:
                     session.cookies.set(cookie['name'], cookie['value'])
         except Exception as e:
             logger.warning(f"Could not load cookies: {e}")
+            # Если куки плохие, лучше удалить файл
+            if os.path.exists(COOKIE_FILE): os.remove(COOKIE_FILE)
+
     return session
 
 
@@ -143,8 +165,52 @@ def generate_slot_id(item):
     return hashlib.md5("_".join(parts).encode()).hexdigest()
 
 
+def normalize_name(name):
+    """Приводит ФИО к формату 'Фамилия И.О.' для сопоставления."""
+    if not name: return ""
+    # Убираем лишние пробелы и разбиваем
+    parts = re.sub(r'\s+', ' ', name.strip()).split()
+    if len(parts) >= 3:
+        # Иванов Иван Иванович -> Иванов И.И.
+        return f"{parts[0]} {parts[1][0]}.{parts[2][0]}."
+    elif len(parts) == 2:
+        # Иванов Иван -> Иванов И.
+        return f"{parts[0]} {parts[1][0]}."
+    return name
+
+
+def fetch_teacher_ratings():
+    """Загружает рейтинги из локального JSON-файла."""
+    file_path = os.path.join(basedir, 'teachers.json')
+    data = {}
+    try:
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                raw_data = json.load(f)
+                for name, info in raw_data.items():
+                    # При загрузке сразу делаем ключи и нормализованные имена
+                    data[name.lower()] = info
+                    data[normalize_name(name).lower()] = info
+            logger.info(f"Loaded {len(raw_data)} teachers from JSON.")
+        else:
+            logger.error("teachers.json not found! Ratings will not be displayed.")
+    except Exception as e:
+        logger.error(f"Failed to load teachers.json: {e}")
+    return data
+
+
+def find_teacher_info(name):
+    """Ищет данные в кэше по полному ФИО или сокращенному."""
+    if not name: return None
+    name_lower = name.lower()
+    norm_name = normalize_name(name).lower()
+
+    # Сначала ищем точное совпадение, потом по инициалам
+    return TEACHER_RATINGS.get(name_lower) or TEACHER_RATINGS.get(norm_name)
+
+
 def format_message(new_items):
-    """Формирует читаемое сообщение для Telegram."""
+    """Формирует читаемое сообщение с учетом рейтинга."""
     msg_lines = ["<b>🔥 ДОСТУПНЫ НОВЫЕ СЛОТЫ!</b>\n"]
 
     for item in new_items:
@@ -155,11 +221,25 @@ def format_message(new_items):
         teacher = item.get('teacherName') or "Преподаватель не указан"
         vacancy = item.get('vacancy', 0)
 
+        # Поиск рейтинга
+        t_info = find_teacher_info(teacher)
+        if t_info:
+            rating = t_info.get('rating', '??')
+            # Используем .get('url'), чтобы не упасть, если ссылки нет
+            url = t_info.get('url')
+
+            rating_display = f"⭐️ Рейтинг: <b>{rating}</b>"
+            if url:
+                rating_display += f"\n🔗 <a href='{url}'>Профиль на Studizba</a>"
+        else:
+            rating_display = "ℹ️ Рейтинг: <i>не найден</i>"
+
         card = (
             f"🏟 <b>{name}</b>\n"
             f"🗓  {day} |⏰  {time_slot}\n"
             f"📍  {place}\n"
             f"👨‍🏫  {teacher}\n"
+            f"{rating_display}\n"
             f"🟢  Свободно мест: <b>{vacancy}</b>"
         )
         msg_lines.append(card)
@@ -172,18 +252,23 @@ def check_slots():
     session = get_session()
 
     try:
+        # 1. Делаем реальный запрос к API
         response = session.get(API_URL, timeout=15)
 
+        # 2. Проверяем авторизацию
         if response.status_code in [401, 403]:
             logger.warning("Access denied (401/403). Token expired.")
             update_cookies_via_selenium()
             return
 
+        # 3. Проверяем общие ошибки сервера
         if response.status_code != 200:
             logger.error(f"API Error: Status {response.status_code}")
             return
 
+        # 4. Получаем данные
         days_list = response.json()
+
         if not days_list:
             logger.debug("Received empty schedule list.")
             return
@@ -191,7 +276,7 @@ def check_slots():
         current_slots_map = {}
         new_slots_data = []
 
-        # Парсинг структуры: Список Дней -> Список Групп
+        # 5. Парсинг структуры: Список Дней -> Список Групп
         for day_data in days_list:
             groups = day_data.get('groups', [])
             for group in groups:
@@ -200,13 +285,15 @@ def check_slots():
 
                 vacancy = int(group.get('vacancy', 0))
                 if vacancy > 0:
+                    # Если слот новый (его ID нет в KNOWN_SLOTS)
                     if slot_id not in KNOWN_SLOTS:
                         new_slots_data.append(group)
                         KNOWN_SLOTS.add(slot_id)
 
-        # Очистка старых ID из памяти (garbage collection)
+        # 6. Очистка старых ID (чтобы память не росла бесконечно)
         KNOWN_SLOTS.intersection_update(current_slots_map.keys())
 
+        # 7. Отправка уведомлений
         if new_slots_data:
             logger.info(f"Found {len(new_slots_data)} new slots. Sending notification.")
             text = format_message(new_slots_data)
@@ -311,26 +398,27 @@ def telegram_loop():
 
 
 def main():
-    logger.info("Service started. Monitoring BMSTU slots.")
+    global TEACHER_RATINGS
+    # 1. Сначала запускаем поток команд, чтобы /check работал сразу
+    threading.Thread(target=telegram_loop, daemon=True).start()
 
-    # 1. Первичная авторизация
+    # 2. Парсим рейтинги
+    try:
+        TEACHER_RATINGS = fetch_teacher_ratings()
+    except:
+        send_telegram("⚠️ Рейтинги не загружены.")
+
+    # 3. Проверка куки
     if not os.path.exists(COOKIE_FILE):
-        update_cookies_via_selenium()
-
-    # 2. Запускаем обработку команд в ОТДЕЛЬНОМ потоке
-    # Это позволит боту отвечать на /start мгновенно,
-    # даже если основная программа занята проверкой слотов
-    cmd_thread = threading.Thread(target=telegram_loop, daemon=True)
-    cmd_thread.start()
-
-    # 3. Основной цикл (только мониторинг слотов)
-    while True:
         try:
-            check_slots()
+            update_cookies_via_selenium()
         except Exception as e:
-            logger.error(f"Main loop error: {e}")
+            logger.error(f"Critical error during initial login: {e}")
+            # Не останавливаем бота, чтобы /check работал, но логируем
 
-        # Ждем 3 минуты до следующей проверки
+    # 4. Основной цикл
+    while True:
+        check_slots()
         time.sleep(SLOTS_CHECK_INTERVAL)
 
 
