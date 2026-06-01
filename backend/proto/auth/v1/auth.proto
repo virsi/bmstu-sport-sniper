@@ -1,0 +1,157 @@
+// Package authv1 описывает gRPC-контракт auth-svc — сервис аутентификации
+// пользователей сайта fizcultor-bot.
+//
+// Зона ответственности:
+//   - Хранение пользователей (argon2id пароли).
+//   - Выпуск/обновление/отзыв JWT (HS256, access 15m + refresh 30d с rotation).
+//   - Привязка Telegram chat_id к пользователю (двухшаговый deeplink-флоу).
+//
+// Что НЕ делает: не знает про BMSTU-креды, фильтры или слоты. Эти данные
+// живут в bmstu-svc и filter-svc, связь только по user_id.
+syntax = "proto3";
+
+package auth.v1;
+
+import "google/protobuf/timestamp.proto";
+import "common/v1/common.proto";
+
+option go_package = "github.com/fizcultor/backend/gen/auth/v1;authv1";
+
+// AuthService — RPC поверх gRPC, потребитель: gateway-svc (для REST) и
+// внутренние сервисы (для валидации JWT через VerifyAccess).
+service AuthService {
+  // Register создаёт нового пользователя.
+  // Возвращает INVALID_ARGUMENT при невалидном email/пароле,
+  // ALREADY_EXISTS если email занят.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // Login проверяет email+пароль и выдаёт пару access/refresh токенов.
+  // Возвращает UNAUTHENTICATED при неверных кредах (не различая email vs password).
+  rpc Login(LoginRequest) returns (TokenPair);
+
+  // Refresh ротирует refresh-токен: старый помечается revoked, выдаётся новая пара.
+  // Reuse-detection: если предъявлен уже revoked refresh — отзываются ВСЕ токены
+  // пользователя (потенциальная кража). Возвращает UNAUTHENTICATED.
+  rpc Refresh(RefreshRequest) returns (TokenPair);
+
+  // Revoke помечает refresh-токен (и связанный access по jti) как отозванный.
+  // Используется при logout. Идемпотентен.
+  rpc Revoke(RevokeRequest) returns (RevokeResponse);
+
+  // GetMe возвращает профиль владельца access-токена.
+  // user_id извлекается из контекста (gateway уже провалидировал JWT).
+  rpc GetMe(GetMeRequest) returns (common.v1.User);
+
+  // VerifyAccess валидирует access-token (подпись, exp, revoked) и возвращает claims.
+  // Вызывается gateway-svc на каждом защищённом запросе.
+  // Возвращает UNAUTHENTICATED при провале.
+  rpc VerifyAccess(VerifyAccessRequest) returns (VerifyAccessResponse);
+
+  // LinkTelegramInit генерирует одноразовый код и deeplink вида
+  // https://t.me/<bot>?start=<code>. Код TTL=10 минут, хранится в auth_db.
+  rpc LinkTelegramInit(LinkTelegramInitRequest) returns (LinkTelegramInitResponse);
+
+  // LinkTelegramComplete вызывается из notifier-svc после получения /start <code>
+  // в Telegram. Привязывает chat_id к пользователю, инвалидирует код.
+  // Возвращает NOT_FOUND если код не найден/истёк.
+  rpc LinkTelegramComplete(LinkTelegramCompleteRequest) returns (LinkTelegramCompleteResponse);
+}
+
+// RegisterRequest — данные для регистрации.
+message RegisterRequest {
+  // email — будет приведён к lowercase + trimmed на стороне сервера.
+  string email = 1;
+  // password — plain text, минимум 8 символов, любой набор. Хешируется argon2id.
+  string password = 2;
+}
+
+// RegisterResponse — успешный ответ Register.
+message RegisterResponse {
+  // user — созданный пользователь без полей сессии.
+  common.v1.User user = 1;
+}
+
+// LoginRequest — креды для входа.
+message LoginRequest {
+  // email — будет нормализован (lowercase, trim).
+  string email = 1;
+  // password — plain text, сверяется с argon2id-хешем в БД.
+  string password = 2;
+}
+
+// TokenPair — стандартная пара access+refresh, возвращается из Login и Refresh.
+message TokenPair {
+  // access_token — JWT, TTL 15 минут. Claims: sub (user_id), exp, iat, jti.
+  string access_token = 1;
+  // refresh_token — opaque строка (UUIDv7), хранится hashed в refresh_tokens.
+  string refresh_token = 2;
+  // access_expires_at — момент истечения access-токена, UTC.
+  google.protobuf.Timestamp access_expires_at = 3;
+  // refresh_expires_at — момент истечения refresh-токена, UTC.
+  google.protobuf.Timestamp refresh_expires_at = 4;
+}
+
+// RefreshRequest — запрос на ротацию токенов.
+message RefreshRequest {
+  // refresh_token — текущий refresh, который будет revoked после ротации.
+  string refresh_token = 1;
+}
+
+// RevokeRequest — запрос на отзыв refresh-токена (logout).
+message RevokeRequest {
+  // refresh_token — токен для отзыва. Не ошибка, если уже revoked.
+  string refresh_token = 1;
+}
+
+// RevokeResponse — пустой ответ, успех = no error.
+message RevokeResponse {}
+
+// GetMeRequest — запрос профиля.
+message GetMeRequest {
+  // user_id — берётся из validated JWT, gateway-svc подставляет сам.
+  string user_id = 1;
+}
+
+// VerifyAccessRequest — запрос валидации access-токена.
+message VerifyAccessRequest {
+  // access_token — JWT для проверки.
+  string access_token = 1;
+}
+
+// VerifyAccessResponse — claims из валидного токена.
+message VerifyAccessResponse {
+  // user_id — subject (sub) claim.
+  string user_id = 1;
+  // expires_at — момент истечения, UTC.
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+// LinkTelegramInitRequest — старт Telegram-привязки.
+message LinkTelegramInitRequest {
+  // user_id — кто привязывает, из контекста.
+  string user_id = 1;
+}
+
+// LinkTelegramInitResponse — код и deeplink для отображения юзеру.
+message LinkTelegramInitResponse {
+  // deeplink — полный URL t.me/<bot>?start=<code>, отдаётся фронту.
+  string deeplink = 1;
+  // code — одноразовый код (для отладки/копипасты), TTL=10m.
+  string code = 2;
+  // expires_at — когда код станет невалидным.
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+// LinkTelegramCompleteRequest — завершение привязки, вызывается из notifier-svc.
+message LinkTelegramCompleteRequest {
+  // code — код из /start <code>.
+  string code = 1;
+  // telegram_chat_id — chat_id из update в Telegram API.
+  int64 telegram_chat_id = 2;
+}
+
+// LinkTelegramCompleteResponse — результат привязки.
+message LinkTelegramCompleteResponse {
+  // user_id — пользователь, к которому привязали (notifier должен ответить юзеру).
+  string user_id = 1;
+}

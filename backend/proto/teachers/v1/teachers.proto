@@ -1,0 +1,117 @@
+// Package teachersv1 описывает gRPC-контракт teachers-svc — справочник
+// преподавателей физкультуры BMSTU с рейтингами.
+//
+// Зона ответственности:
+//   - Поиск преподавателей по uid (FK из Slot.teacher_uid).
+//   - List/search по имени/секции.
+//   - One-shot bootstrap: при первом старте импорт teachers.json (embedded)
+//     в БД, далее можно обновлять через Refresh.
+//
+// Что НЕ делает: не вычисляет рейтинг сам — рейтинги уже в teachers.json
+// (агрегаты из mai.ru/mospolytech и др.), сервис только хранит.
+syntax = "proto3";
+
+package teachers.v1;
+
+import "common/v1/common.proto";
+
+option go_package = "github.com/fizcultor/backend/gen/teachers/v1;teachersv1";
+
+// TeachersService — gRPC-контракт справочника преподавателей.
+// Потребители: filter-svc (обогащение MatchedSlot.teacher_rating),
+// gateway-svc (выпадающие списки в UI «выбрать преподавателя»).
+service TeachersService {
+  // Get возвращает одного преподавателя по uid.
+  // NOT_FOUND если uid не найден в справочнике.
+  rpc Get(GetRequest) returns (GetResponse);
+
+  // BatchGet возвращает много преподавателей за один RPC (для filter-svc:
+  // обогатить рейтингами пачку MatchedSlot). Отсутствующие uid'ы
+  // молча пропускаются (не ошибка).
+  rpc BatchGet(BatchGetRequest) returns (BatchGetResponse);
+
+  // List возвращает страницу преподавателей с опциональной фильтрацией.
+  rpc List(ListRequest) returns (ListResponse);
+
+  // Refresh запускает повторный импорт из embedded teachers.json
+  // (или из переданного inline-JSON для теста). Идемпотентен:
+  // upsert по uid, не дубликаты.
+  rpc Refresh(RefreshRequest) returns (RefreshResponse);
+}
+
+// Teacher — запись о преподавателе.
+message Teacher {
+  // uid — внутренний BMSTU ID, первичный ключ. Тот же uid, что в Slot.teacher_uid.
+  string uid = 1;
+  // full_name — ФИО как в teachers.json (обычно "Фамилия Имя Отчество").
+  string full_name = 2;
+  // rating — агрегированный рейтинг 0..5. 0 = «нет данных».
+  double rating = 3;
+  // reviews_count — сколько отзывов учтено в рейтинге.
+  int32 reviews_count = 4;
+  // sections — секции, которые ведёт преподаватель, как в teachers.json.
+  // Пустой список = неизвестно.
+  repeated string sections = 5;
+}
+
+// GetRequest — выборка по uid.
+message GetRequest {
+  // uid — BMSTU id преподавателя.
+  string uid = 1;
+}
+
+// GetResponse — найденный преподаватель.
+message GetResponse {
+  Teacher teacher = 1;
+}
+
+// BatchGetRequest — пачка uid'ов.
+message BatchGetRequest {
+  // uids — список запрашиваемых uid (без дубликатов на стороне клиента).
+  repeated string uids = 1;
+}
+
+// BatchGetResponse — найденные записи. Длина может быть меньше len(uids).
+message BatchGetResponse {
+  // teachers — найденные. Порядок не гарантирован, ключ — Teacher.uid.
+  repeated Teacher teachers = 1;
+}
+
+// ListRequest — листинг с фильтрами и пагинацией.
+message ListRequest {
+  // section_filter — точное совпадение секции (case-insensitive).
+  // Пустой = все секции.
+  optional string section_filter = 1;
+  // name_query — substring-поиск по full_name (case-insensitive).
+  // Пустой = без фильтра.
+  optional string name_query = 2;
+  // min_rating — нижняя граница rating (0..5). 0 = без фильтра.
+  optional double min_rating = 3;
+  // page — параметры пагинации.
+  common.v1.PageRequest page = 4;
+}
+
+// ListResponse — страница результатов.
+message ListResponse {
+  repeated Teacher teachers = 1;
+  common.v1.PageResponse page = 2;
+}
+
+// RefreshRequest — параметры импорта.
+message RefreshRequest {
+  // inline_json — если непустая, используется вместо embedded teachers.json
+  // (для тестов и админских апдейтов).
+  optional string inline_json = 1;
+}
+
+// RefreshResponse — статистика импорта.
+message RefreshResponse {
+  // total — сколько записей в источнике.
+  int32 total = 1;
+  // inserted — новые записи.
+  int32 inserted = 2;
+  // updated — существующие, у которых изменилось хотя бы одно поле.
+  int32 updated = 3;
+  // unchanged — без изменений.
+  int32 unchanged = 4;
+}

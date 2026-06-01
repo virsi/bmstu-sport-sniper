@@ -1,0 +1,220 @@
+name: Release
+
+# Триггер: push тэга v*.
+#
+# Шаги:
+#   1. Сборка Docker-образов для всех 7 Go-сервисов через Dockerfile.svc.
+#   2. Frontend build (vite) + сборка nginx-образа со статикой.
+#   3. SBOM (syft) + vulnerability scan (trivy) — артефакты заливаются в Release.
+#   4. Push образов в GHCR с тэгами {sha, version, latest}.
+#   5. Создание GitHub Release с changelog (авто-генерация по коммитам).
+#
+# Все образы публикуются в ghcr.io/<owner>/fizcultor-<service>:<version>,
+# где <owner> — github.repository_owner.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # GitHub Release
+  packages: write   # GHCR push
+  id-token: write   # OIDC для cosign (если включим позже)
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/fizcultor
+
+jobs:
+  # ============== Backend Go-сервисы ==============
+  build-services:
+    name: Build service ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - auth-svc
+          - bmstu-svc
+          - filter-svc
+          - gateway-svc
+          - notifier-svc
+          - poller-svc
+          - teachers-svc
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: meta
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >&2
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/deploy/Dockerfile.svc
+          build-args: |
+            SERVICE=${{ matrix.service }}
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ github.sha }}
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+          provenance: true
+
+      # SBOM (Software Bill of Materials) — JSON-формат, syft.
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ steps.meta.outputs.version }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.service }}.spdx.json
+
+      # Vulnerability scan — trivy. Не падаем на CRITICAL — релиз идёт,
+      # но артефакт скана прикрепляется к Release, оператор смотрит вручную.
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ steps.meta.outputs.version }}
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "0" # warning-only, не блокирует релиз
+
+      - name: Upload SBOM and Trivy artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-${{ matrix.service }}
+          path: |
+            sbom-${{ matrix.service }}.spdx.json
+            trivy-${{ matrix.service }}.sarif
+          retention-days: 90
+
+  # ============== Frontend ==============
+  build-frontend:
+    name: Build frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: pnpm install
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build SPA
+        working-directory: frontend
+        run: pnpm build
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version
+        id: meta
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      # Build a small nginx image with static SPA.
+      # Альтернатива: встроить через go:embed в gateway-svc — реализовано
+      # позже (см. wave3-brief TODO embed). Пока — отдельный image.
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-frontend:${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE_PREFIX }}-frontend:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-frontend:latest
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+        # Continue-on-error — Dockerfile может ещё не существовать (см. TODO
+        # ниже). Если frontend image не нужен — закомментируй этот step.
+        continue-on-error: true
+
+  # ============== GitHub Release ==============
+  release:
+    name: Create GitHub Release
+    needs: [build-services, build-frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download security artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: security-*
+          path: ./security
+          merge-multiple: true
+
+      - name: Extract version
+        id: meta
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Поиск предыдущего тега для diff'а; если нет — first commit.
+          PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF}^" 2>/dev/null || git rev-list --max-parents=0 HEAD | head -1)
+          {
+            echo "## What's changed"
+            echo
+            git log --pretty=format:"- %s (%h)" "${PREV}..${GITHUB_REF}"
+            echo
+            echo
+            echo "## Docker images"
+            echo
+            for svc in auth-svc bmstu-svc filter-svc gateway-svc notifier-svc poller-svc teachers-svc frontend; do
+              echo "- \`${{ env.IMAGE_PREFIX }}-${svc}:${{ steps.meta.outputs.version }}\`"
+            done
+          } > CHANGELOG.md
+          cat CHANGELOG.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.version }}
+          name: ${{ steps.meta.outputs.version }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: ${{ contains(steps.meta.outputs.version, '-') }}
+          files: |
+            ./security/*.spdx.json
+            ./security/*.sarif

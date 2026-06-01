@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1.7
+#
+# Multi-stage Dockerfile, параметризованный через ARG SERVICE.
+#
+# Build:
+#   docker build -f backend/deploy/Dockerfile.svc \
+#                --build-arg SERVICE=auth-svc \
+#                -t fizcultor/auth-svc:dev backend
+#
+# Контекст сборки — backend/.
+
+# ---------- builder ----------
+FROM golang:1.23-alpine AS builder
+
+ARG SERVICE
+ARG VERSION=dev
+ARG COMMIT=unknown
+
+RUN apk add --no-cache git ca-certificates tzdata
+
+WORKDIR /src
+
+# Сначала копируем workspace + go.mod'ы, чтобы кэшировать deps.
+COPY go.work go.work
+COPY pkg/go.mod pkg/go.mod
+COPY pkg/go.sum pkg/go.sum
+COPY services/${SERVICE}/go.mod services/${SERVICE}/go.mod
+COPY services/${SERVICE}/go.sum services/${SERVICE}/go.sum
+
+# Заранее скачиваем модули (через workspace + per-module).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    cd pkg && go mod download && \
+    cd /src/services/${SERVICE} && go mod download
+
+# Копируем исходники.
+COPY pkg/ pkg/
+COPY services/${SERVICE}/ services/${SERVICE}/
+
+# Сборка статического бинарника.
+ENV CGO_ENABLED=0 GOOS=linux GOFLAGS="-trimpath"
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    cd services/${SERVICE} && \
+    go build -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+             -o /out/server ./cmd/server
+
+# ---------- runtime ----------
+FROM gcr.io/distroless/static:nonroot
+
+COPY --from=builder /out/server /server
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+USER nonroot:nonroot
+EXPOSE 8080 9090
+
+ENTRYPOINT ["/server"]

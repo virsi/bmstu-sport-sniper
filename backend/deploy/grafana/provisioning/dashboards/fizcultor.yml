@@ -1,0 +1,17 @@
+# Provisioning dashboards для Grafana.
+#
+# Auto-load всех .json из /var/lib/grafana/dashboards при старте.
+
+apiVersion: 1
+
+providers:
+  - name: 'fizcultor'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,0 +1,26 @@
+go 1.23.0
+
+use (
+	./gen
+	./pkg
+	./services/auth-svc
+	./services/bmstu-svc
+	./services/filter-svc
+	./services/gateway-svc
+	./services/notifier-svc
+	./services/poller-svc
+	./services/teachers-svc
+	./tests/testhelpers
+)
+
+// telebot.v3@v3.3.8 (notifier-svc) транзитивно тянет spf13/viper@v1.13.0,
+// который требует устаревший google.golang.org/genproto v0.0.0-20220519...
+// с подпакетом googleapis/rpc/status. Тот же пакет уже есть в спличенном
+// google.golang.org/genproto/googleapis/rpc — Go workspace отказывается
+// разрешить ambiguous import. Форсируем нужную (новую, без проблемного
+// подпакета) версию genproto на уровне workspace.
+replace google.golang.org/genproto => google.golang.org/genproto v0.0.0-20240604185151-ef581f913117
+
+// Замечание про rogpeppe/go-internal — см. per-service go.mod. Workspace-level
+// replace в go.work *не* применяется при go mod tidy, поэтому пин стоит в
+// каждом сервисном go.mod отдельно.

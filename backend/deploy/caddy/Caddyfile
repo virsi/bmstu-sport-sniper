@@ -1,0 +1,25 @@
+# Dev Caddyfile.
+# TLS отключён в dev; production-конфиг с auto-HTTPS — в Wave 5 (devops Phase 3).
+{
+	auto_https off
+	admin off
+}
+
+:80 {
+	# Все /api/* запросы и SSE → gateway-svc
+	@api path /api/* /healthz /readyz
+	handle @api {
+		reverse_proxy gateway-svc:8080 {
+			# SSE требует длинного timeout и без буферизации
+			flush_interval -1
+			transport http {
+				read_timeout 24h
+			}
+		}
+	}
+
+	# Всё остальное (статика фронта) — заглушка пока, добавится frontend-dev.
+	handle {
+		respond "fizcultor-bot dev" 200
+	}
+}

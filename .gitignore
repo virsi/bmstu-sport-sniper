@@ -1,0 +1,44 @@
+# Secrets
+.env
+.env.local
+.env.prod
+*.pem
+*.key
+
+# Go
+bin/
+*.exe
+*.test
+*.out
+coverage/
+*.prof
+*.cover
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+.pnpm-store/
+playwright-report/
+test-results/
+.nyc_output/
+*.tsbuildinfo
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Build artifacts
+backend/gen/**/*.pb.go.bak
+backend/coverage/
+
+# Legacy refs (preserved in `legacy-python` branch)
+backend/refs/

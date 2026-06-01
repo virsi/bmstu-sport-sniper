@@ -1,0 +1,22 @@
+{
+  "name": "fizcultor-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20.10.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @fizcultor/web dev",
+    "build": "pnpm --filter @fizcultor/web build",
+    "preview": "pnpm --filter @fizcultor/web preview",
+    "lint": "pnpm -r --parallel lint",
+    "typecheck": "pnpm -r --parallel typecheck",
+    "test": "pnpm -r --parallel test",
+    "format": "prettier --write \"**/*.{ts,vue,js,json,md,css}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3"
+  }
+}

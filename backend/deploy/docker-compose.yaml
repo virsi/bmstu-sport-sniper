@@ -1,0 +1,175 @@
+name: fizcultor
+
+x-go-svc: &go-svc
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.svc
+  restart: unless-stopped
+  env_file:
+    - ../.env
+  networks:
+    - fizcultor-net
+  depends_on:
+    postgres:
+      condition: service_healthy
+    nats:
+      condition: service_started
+
+services:
+  # ---------- Infrastructure ----------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fizcultor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fizcultor}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-postgres.sh:/docker-entrypoint-initdb.d/00-init-databases.sh:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fizcultor}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - fizcultor-net
+
+  nats:
+    image: nats:2-alpine
+    restart: unless-stopped
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    networks:
+      - fizcultor-net
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - fizcultor-net
+    depends_on:
+      - gateway-svc
+
+  # ---------- Application services ----------
+  auth-svc:
+    <<: *go-svc
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.svc
+      args:
+        SERVICE: auth-svc
+    environment:
+      SERVICE_NAME: auth-svc
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-fizcultor}:${POSTGRES_PASSWORD:-fizcultor}@postgres:5432/auth_db?sslmode=disable
+    healthcheck:
+      test: ["CMD", "/server", "--healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  bmstu-svc:
+    <<: *go-svc
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.svc
+      args:
+        SERVICE: bmstu-svc
+    environment:
+      SERVICE_NAME: bmstu-svc
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-fizcultor}:${POSTGRES_PASSWORD:-fizcultor}@postgres:5432/bmstu_db?sslmode=disable
+
+  filter-svc:
+    <<: *go-svc
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.svc
+      args:
+        SERVICE: filter-svc
+    environment:
+      SERVICE_NAME: filter-svc
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-fizcultor}:${POSTGRES_PASSWORD:-fizcultor}@postgres:5432/filter_db?sslmode=disable
+
+  teachers-svc:
+    <<: *go-svc
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.svc
+      args:
+        SERVICE: teachers-svc
+    environment:
+      SERVICE_NAME: teachers-svc
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-fizcultor}:${POSTGRES_PASSWORD:-fizcultor}@postgres:5432/teachers_db?sslmode=disable
+
+  notifier-svc:
+    <<: *go-svc
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.svc
+      args:
+        SERVICE: notifier-svc
+    environment:
+      SERVICE_NAME: notifier-svc
+
+  poller-svc:
+    <<: *go-svc
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.svc
+      args:
+        SERVICE: poller-svc
+    environment:
+      SERVICE_NAME: poller-svc
+    depends_on:
+      bmstu-svc:
+        condition: service_started
+      filter-svc:
+        condition: service_started
+      notifier-svc:
+        condition: service_started
+
+  gateway-svc:
+    <<: *go-svc
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.svc
+      args:
+        SERVICE: gateway-svc
+    environment:
+      SERVICE_NAME: gateway-svc
+    ports:
+      - "8080:8080"
+    depends_on:
+      auth-svc:
+        condition: service_started
+      bmstu-svc:
+        condition: service_started
+      filter-svc:
+        condition: service_started
+      notifier-svc:
+        condition: service_started
+      teachers-svc:
+        condition: service_started
+      nats:
+        condition: service_started
+
+networks:
+  fizcultor-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

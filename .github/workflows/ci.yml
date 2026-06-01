@@ -1,0 +1,291 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.23"
+  NODE_VERSION: "20"
+
+jobs:
+  # ============ Backend ============
+
+  go-lint:
+    name: Go lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            backend/pkg/go.sum
+            backend/services/*/go.sum
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61.0
+          working-directory: backend/pkg
+          args: --timeout=5m
+      - name: golangci-lint per-service
+        run: |
+          set -euo pipefail
+          for svc in services/*/; do
+            echo "=== $svc ==="
+            (cd "$svc" && golangci-lint run --timeout=5m ./...)
+          done
+
+  go-test:
+    name: Go unit test + coverage gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            backend/pkg/go.sum
+            backend/services/*/go.sum
+      - name: Test pkg (with race + coverage)
+        run: |
+          mkdir -p coverage
+          cd pkg
+          go test -race -count=1 -coverprofile=../coverage/pkg.out ./...
+      - name: Test services (with race + coverage)
+        run: |
+          set -euo pipefail
+          mkdir -p coverage
+          for svc in services/*/; do
+            name=$(basename "$svc")
+            echo "=== $name ==="
+            (cd "$svc" && go test -race -count=1 -coverprofile="../../coverage/${name}.out" ./...)
+          done
+      - name: Coverage gate (40% per service, pkg excluded)
+        run: |
+          set -euo pipefail
+          THRESHOLD=40
+          fail=0
+          for f in coverage/*.out; do
+            name=$(basename "$f" .out)
+            pct=$(go tool cover -func="$f" | awk '/^total:/ {gsub("%","",$3); print $3}')
+            printf "%-30s %s%%\n" "$name" "$pct"
+            if [ "$name" = "pkg" ]; then
+              continue   # pkg is mostly type declarations; not in the gate
+            fi
+            if ! awk -v p="$pct" -v t="$THRESHOLD" 'BEGIN { exit (p+0 < t+0) }'; then
+              echo "  -> $name below $THRESHOLD%"
+              fail=1
+            fi
+          done
+          exit $fail
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage/
+          retention-days: 7
+
+  go-build:
+    name: Go build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            backend/pkg/go.sum
+            backend/services/*/go.sum
+      - name: Build all
+        run: make build
+
+  # Integration tests are gated to push events on main/develop because they
+  # need Docker for testcontainers and are 30-60 seconds slower. On PRs we
+  # keep the loop tight; on main we run the full integration matrix.
+  go-integration:
+    name: Go integration (testcontainers)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'integration')
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            backend/pkg/go.sum
+            backend/services/*/go.sum
+            backend/tests/testhelpers/go.sum
+      # ubuntu-latest runners ship Docker pre-installed; the daemon is up by
+      # default. We sanity-check before running tests.
+      - name: Verify Docker is available
+        run: docker info
+      - name: Run integration tests per service
+        run: |
+          set -euo pipefail
+          for svc in auth-svc bmstu-svc filter-svc notifier-svc teachers-svc; do
+            if [ -d "services/$svc/integration_test" ]; then
+              echo "=== integration $svc ==="
+              (cd "services/$svc" && go test -tags integration -count=1 -timeout 180s -v ./integration_test/...)
+            fi
+          done
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs
+          path: backend/services/*/integration_test/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  buf:
+    name: Buf lint + breaking
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: bufbuild/buf-action@v1
+        with:
+          version: 1.45.0
+          input: backend
+          breaking_against: "https://github.com/${{ github.repository }}.git#branch=main,subdir=backend"
+
+  sqlc:
+    name: sqlc diff
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sqlc-dev/setup-sqlc@v4
+        with:
+          sqlc-version: "1.27.0"
+      - name: Verify sqlc generation is up to date
+        run: |
+          # При пустом sqlc.yaml ничего не делаем; иначе diff
+          if grep -q '^sql: \[\]' sqlc.yaml; then
+            echo "sqlc not configured yet — skipping"; exit 0
+          fi
+          sqlc diff
+
+  # ============ Frontend ============
+
+  frontend:
+    name: Frontend lint + test + coverage gate + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Check frontend dir exists
+        id: check
+        run: |
+          if [ ! -f package.json ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: pnpm install
+        if: steps.check.outputs.skip != 'true'
+        run: pnpm install --frozen-lockfile
+      - name: pnpm lint
+        if: steps.check.outputs.skip != 'true'
+        run: pnpm lint
+      - name: pnpm typecheck
+        if: steps.check.outputs.skip != 'true'
+        run: pnpm typecheck
+      # Vitest coverage threshold is configured in vitest.config.ts; the
+      # command exits non-zero if any metric falls below.
+      - name: pnpm test:coverage
+        if: steps.check.outputs.skip != 'true'
+        run: pnpm -C apps/web test:coverage
+      - name: pnpm build
+        if: steps.check.outputs.skip != 'true'
+        run: pnpm build
+      - name: Upload frontend coverage
+        if: always() && steps.check.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/apps/web/coverage/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  e2e:
+    name: Playwright E2E (mocked backend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Check frontend dir exists
+        id: check
+        run: |
+          if [ ! -f package.json ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: pnpm install
+        if: steps.check.outputs.skip != 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Build SPA
+        if: steps.check.outputs.skip != 'true'
+        run: pnpm -C apps/web build
+      - name: Install Playwright browsers
+        if: steps.check.outputs.skip != 'true'
+        run: pnpm -C apps/web exec playwright install --with-deps chromium
+      - name: Run E2E
+        if: steps.check.outputs.skip != 'true'
+        run: pnpm -C apps/web exec playwright test
+      - name: Upload Playwright report
+        if: always() && steps.check.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/apps/web/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload Playwright traces and screenshots on failure
+        if: failure() && steps.check.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            frontend/apps/web/test-results/
+          retention-days: 7
+          if-no-files-found: ignore

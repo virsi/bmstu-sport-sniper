@@ -1,0 +1,190 @@
+// Package filterv1 описывает gRPC-контракт filter-svc — сервис фильтров и
+// дедупликации слотов.
+//
+// Зона ответственности:
+//   - CRUD пользовательских фильтров.
+//   - Чистая функция матчинга: (filters, slots) → MatchedSlot[].
+//   - Дедуп через таблицу known_slots: один и тот же slot.id одного юзера
+//     не должен порождать повторных алёртов.
+//   - Лог алёртов (для аналитики и parity-проверки с Python-версией).
+//
+// ВАЖНО — фикс бага исходного main.py:312:
+//   known_slots НЕ очищается, если bmstu-svc вернул пустой список или ошибку.
+//   Только явный ResetKnown сбрасывает дедуп.
+syntax = "proto3";
+
+package filter.v1;
+
+import "common/v1/common.proto";
+
+option go_package = "github.com/fizcultor/backend/gen/filter/v1;filterv1";
+
+// FilterService — gRPC-контракт фильтров.
+// Потребители: gateway-svc (CRUD из UI) и poller-svc (MatchSlots в цикле).
+service FilterService {
+  // CreateFilter создаёт фильтр пользователя. user_id заполняется из контекста.
+  // Возвращает INVALID_ARGUMENT если time_from > time_to или min_rating вне [0,5].
+  rpc CreateFilter(CreateFilterRequest) returns (CreateFilterResponse);
+
+  // GetFilter возвращает один фильтр по id.
+  // Проверяет, что filter.user_id == ctx.user_id (иначе PERMISSION_DENIED).
+  rpc GetFilter(GetFilterRequest) returns (GetFilterResponse);
+
+  // ListFilters возвращает все фильтры пользователя, отсортированные
+  // по created_at DESC. Пагинация не нужна (typical N < 20).
+  rpc ListFilters(ListFiltersRequest) returns (ListFiltersResponse);
+
+  // UpdateFilter частично обновляет фильтр. update_mask указывает,
+  // какие поля менять (пустая маска = заменить всё).
+  rpc UpdateFilter(UpdateFilterRequest) returns (UpdateFilterResponse);
+
+  // DeleteFilter удаляет фильтр. Идемпотентен (повторный = OK).
+  rpc DeleteFilter(DeleteFilterRequest) returns (DeleteFilterResponse);
+
+  // MatchSlots применяет все enabled-фильтры пользователя к переданным слотам,
+  // обогащает рейтингом через teachers-svc, проверяет known_slots на дедуп.
+  // Возвращает только МАТЧНУВШИЕ слоты, с флагом is_new.
+  //
+  // Чистая (side-effect-free) по части матчинга, но читает known_slots из БД.
+  // Не пишет в known_slots — это делает MarkSeen после успешной отправки.
+  rpc MatchSlots(MatchSlotsRequest) returns (MatchSlotsResponse);
+
+  // MarkSeen добавляет slot_ids в known_slots пользователя.
+  // Вызывается poller-svc после успешной отправки алёрта через notifier.
+  // Разделение Match/MarkSeen позволяет не помечать seen, если notifier упал.
+  rpc MarkSeen(MarkSeenRequest) returns (MarkSeenResponse);
+
+  // ResetKnown очищает known_slots пользователя (явная операция, например
+  // «получать алёрты заново»). НЕ вызывается автоматически при ошибках.
+  rpc ResetKnown(ResetKnownRequest) returns (ResetKnownResponse);
+}
+
+// CreateFilterRequest — параметры нового фильтра.
+message CreateFilterRequest {
+  // user_id — владелец, из контекста gateway.
+  string user_id = 1;
+  // section — фильтр по секции (точное совпадение, case-insensitive).
+  optional string section = 2;
+  // teacher_uid — фильтр по преподавателю.
+  optional string teacher_uid = 3;
+  // day_of_week — фильтр по дню недели. UNSPECIFIED = любой.
+  common.v1.DayOfWeek day_of_week = 4;
+  // time_from — нижняя граница "HH:MM" включительно.
+  optional string time_from = 5;
+  // time_to — верхняя граница "HH:MM" включительно.
+  optional string time_to = 6;
+  // min_rating — минимальный рейтинг (0..5).
+  optional double min_rating = 7;
+  // enabled — создавать сразу активным.
+  bool enabled = 8;
+}
+
+// CreateFilterResponse — созданный фильтр.
+message CreateFilterResponse {
+  // filter — с заполненными id, created_at, updated_at.
+  common.v1.Filter filter = 1;
+}
+
+// GetFilterRequest — выборка одного фильтра.
+message GetFilterRequest {
+  // user_id — для проверки владения.
+  string user_id = 1;
+  // filter_id — UUIDv7 фильтра.
+  string filter_id = 2;
+}
+
+// GetFilterResponse — найденный фильтр.
+message GetFilterResponse {
+  common.v1.Filter filter = 1;
+}
+
+// ListFiltersRequest — список фильтров пользователя.
+message ListFiltersRequest {
+  // user_id — чьи фильтры показать.
+  string user_id = 1;
+  // include_disabled — если true, возвращать в т.ч. enabled=false.
+  bool include_disabled = 2;
+}
+
+// ListFiltersResponse — все фильтры пользователя.
+message ListFiltersResponse {
+  repeated common.v1.Filter filters = 1;
+}
+
+// UpdateFilterRequest — частичное обновление.
+message UpdateFilterRequest {
+  // user_id — владелец, из контекста.
+  string user_id = 1;
+  // filter_id — что обновляем.
+  string filter_id = 2;
+  // section — новое значение (или null чтобы снять ограничение).
+  optional string section = 3;
+  // teacher_uid — новое значение.
+  optional string teacher_uid = 4;
+  // day_of_week — UNSPECIFIED означает «не менять» при наличии update_mask,
+  // или «снять ограничение» если поле в маске.
+  common.v1.DayOfWeek day_of_week = 5;
+  // time_from — новая граница времени.
+  optional string time_from = 6;
+  // time_to — новая граница времени.
+  optional string time_to = 7;
+  // min_rating — новый минимальный рейтинг.
+  optional double min_rating = 8;
+  // enabled — вкл/выкл фильтр без удаления.
+  optional bool enabled = 9;
+  // update_mask — список полей, которые менять. Если пустой — обновляются
+  // все non-null поля (PATCH semantics). Имена полей в snake_case.
+  repeated string update_mask = 10;
+}
+
+// UpdateFilterResponse — фильтр после обновления.
+message UpdateFilterResponse {
+  common.v1.Filter filter = 1;
+}
+
+// DeleteFilterRequest — удаление по id.
+message DeleteFilterRequest {
+  string user_id = 1;
+  string filter_id = 2;
+}
+
+// DeleteFilterResponse — пустой ответ.
+message DeleteFilterResponse {}
+
+// MatchSlotsRequest — запрос матчинга слотов.
+message MatchSlotsRequest {
+  // user_id — чьи фильтры применять.
+  string user_id = 1;
+  // slots — кандидаты от bmstu-svc.FetchGroups.
+  repeated common.v1.Slot slots = 2;
+}
+
+// MatchSlotsResponse — матчнувшие слоты.
+message MatchSlotsResponse {
+  // matched — слоты прошедшие хотя бы один фильтр, с метаданными.
+  // is_new=true означает «не было в known_slots до этого вызова».
+  repeated common.v1.MatchedSlot matched = 1;
+}
+
+// MarkSeenRequest — пометить слоты как уже доставленные.
+message MarkSeenRequest {
+  // user_id — для какого юзера.
+  string user_id = 1;
+  // slot_ids — детерминированные ID слотов из Slot.id.
+  repeated string slot_ids = 2;
+}
+
+// MarkSeenResponse — пустой ответ.
+message MarkSeenResponse {}
+
+// ResetKnownRequest — сброс дедупа.
+message ResetKnownRequest {
+  // user_id — чей known_slots очистить.
+  string user_id = 1;
+}
+
+// ResetKnownResponse — количество удалённых записей.
+message ResetKnownResponse {
+  // cleared_count — сколько строк удалено (для UI «сброшено X слотов»).
+  int32 cleared_count = 1;
+}

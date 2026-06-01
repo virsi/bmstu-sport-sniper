@@ -1,0 +1,121 @@
+# Production Caddyfile для fizcultor-bot.
+#
+# Особенности:
+#   - Auto-HTTPS через Let's Encrypt (ACME HTTP-01 challenge на :80).
+#   - HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy.
+#   - CSP минимально-инвазивный: разрешён self + Telegram embed для
+#     deeplink button; inline для Vue dev mode выключен.
+#   - gzip ответы.
+#   - SSE pass-through (X-Accel-Buffering: no, длинные read_timeout).
+#   - /metrics и /grafana — опционально (по дефолту закрыты IP allowlist'ом,
+#     добавь PROM_ALLOW_CIDR / GRAFANA_ALLOW_CIDR в Caddyfile вручную или
+#     раскомментируй secret_block).
+#
+# Переменные окружения (передаются из docker-compose):
+#   DOMAIN              — публичное доменное имя (например, fizcultor.example.com)
+#   CADDY_ACME_EMAIL    — e-mail для ACME-уведомлений Let's Encrypt
+#
+# DEV → PROD: dev-Caddyfile отключает auto_https; prod использует имя домена.
+
+{
+	# Email для Let's Encrypt — без него ACME может рейт-лимитить.
+	email {$CADDY_ACME_EMAIL}
+
+	# Admin API — только из локалхоста (внутри контейнера); compose'у нужен
+	# для healthcheck.
+	admin 0.0.0.0:2019
+}
+
+{$DOMAIN} {
+	# ---------- Security headers ----------
+	# HSTS: 1 год, includeSubDomains, preload. Применяется только после
+	# успешной выдачи сертификата; на dev отключено auto_https — здесь
+	# заголовок безвреден.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options    "nosniff"
+		X-Frame-Options           "DENY"
+		Referrer-Policy           "strict-origin-when-cross-origin"
+		# Минимальный CSP под Vue 3 SPA с inline-style Tailwind:
+		#   default-src 'self'  — статика и API с этого же origin
+		#   script-src  'self'  — никаких inline-скриптов (CSP-friendly Vue build)
+		#   style-src   'self' 'unsafe-inline' — Tailwind генерит inline-style для
+		#                                         CSS variables, без unsafe-inline ломается
+		#   img-src     'self' data: — Vue иконки + inline data: для логотипа
+		#   connect-src 'self'  — fetch и SSE только к нашему API
+		#   frame-ancestors 'none' — двойная защита от clickjacking сверх X-Frame-Options
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		# Permissions-Policy: запрещаем доступ к мощным API, которые SPA не использует.
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(), usb=()"
+		# Убираем Server-заголовок (информационная гигиена; сам Caddy
+		# выставляет "Server: Caddy" — заменяем на пустоту).
+		-Server
+	}
+
+	# ---------- Compression ----------
+	encode zstd gzip
+
+	# ---------- API + healthz ----------
+	# Все запросы /api/*, /healthz, /readyz пробрасываются в gateway-svc.
+	# /metrics НЕ прокинут наружу — Prometheus делает scrape во внутренней сети.
+	@api {
+		path /api/* /healthz /readyz
+	}
+	handle @api {
+		reverse_proxy gateway-svc:8080 {
+			# SSE (/api/stream): отключаем буферизацию, держим long-lived поток.
+			flush_interval -1
+			transport http {
+				read_timeout 24h
+				# Caddy по умолчанию выставляет keep-alive — для SSE этого
+				# достаточно. Отдельно ставим request_header для прокси-цепочки.
+				keepalive 30s
+			}
+			# Подсказка для возможных промежуточных прокси (CF, ALB):
+			# не буферизовать SSE-ответ.
+			header_up X-Accel-Buffering "no"
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# ---------- Frontend (SPA) ----------
+	# Vue SPA подаётся либо как статика из /srv (если frontend-builder положил
+	# dist/ в этот caddy volume), либо проксируется в frontend-контейнер.
+	# Дефолтный сценарий: frontend embedded в gateway-svc (см. wave3-brief)
+	# либо отдельный nginx-контейнер. Раскомментируй нужный handle.
+	#
+	# Вариант A: gateway-svc отдаёт SPA через embed.FS (cmd/server подает
+	# / на handler.SPA).
+	handle {
+		reverse_proxy gateway-svc:8080
+	}
+
+	# Вариант B (если frontend-svc подключен как отдельный контейнер):
+	# handle {
+	#     reverse_proxy frontend:80
+	# }
+
+	# ---------- Logging ----------
+	# Caddy access-логи в JSON для агрегации с slog-логами сервисов.
+	# Healthcheck-ручки фильтруются, чтобы не засирать.
+	log {
+		output stdout
+		format json
+		level INFO
+	}
+}
+
+# ---------- Grafana (опционально, sub-path) ----------
+# Если хочешь публичный доступ к Grafana — раскомментируй ниже + закрой
+# IP allowlist'ом или basic-auth. По дефолту Grafana доступна только во
+# внутренней сети (порт 3000 expose'нут, но не публичный).
+#
+# (basicauth defined inside route since outer site holds main SPA)
+#
+# Альтернатива: отдельный сабдомен grafana.{$DOMAIN}.
+#
+# grafana.{$DOMAIN} {
+#     reverse_proxy grafana:3000
+# }

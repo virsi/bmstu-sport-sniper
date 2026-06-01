@@ -1,0 +1,84 @@
+# Prometheus scrape-config для fizcultor-bot production.
+#
+# Все 7 Go-сервисов экспонируют /metrics на HTTP-порту 8080 (тот же, что и
+# /healthz, /readyz). Префикс метрик: <svc>_ (auth_*, bmstu_* и т.д.).
+#
+# scrape_interval 15s — стандартный compromise: latency-чувствительные метрики
+# обновляются ~раз в pause; CPU/heap графики плавные.
+#
+# Reload без перезапуска: docker exec prometheus kill -HUP 1
+# Или: curl -X POST http://prometheus:9090/-/reload (если включено
+# --web.enable-lifecycle в compose, что мы и сделали).
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+
+  # External labels — добавляются ко всем сериям (полезно если в будущем
+  # будем агрегировать несколько окружений в один Prometheus).
+  external_labels:
+    project: fizcultor
+    environment: prod
+
+# Alertmanager пока не настроен (V2). Когда понадобится — добавь сюда
+# alertmanagers: + rule_files: (см. observability.md).
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["alertmanager:9093"]
+# rule_files:
+#   - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # Самосбор — useful sanity-check, что Prometheus работает.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Все Go-сервисы. Используется static_configs, потому что в compose-сети
+  # имена хостов стабильны. Для k8s/swarm заменить на kubernetes_sd_configs.
+  - job_name: fizcultor-services
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - auth-svc:8080
+          - bmstu-svc:8080
+          - filter-svc:8080
+          - teachers-svc:8080
+          - notifier-svc:8080
+          - poller-svc:8080
+          - gateway-svc:8080
+    # Relabel — добавляем красивый label "service" вместо instance.
+    # Облегчает Grafana-templating: {{ service }} вместо разбора instance.
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '([^:]+):.*'
+        target_label: service
+        replacement: '${1}'
+      - source_labels: [__address__]
+        regex: '([^-]+)-svc:.*'
+        target_label: short_name
+        replacement: '${1}'
+
+  # Caddy admin-API не экспонит /metrics по умолчанию; включается через
+  # `servers { metrics }` в Caddyfile (мы пока не включали — добавь когда
+  # понадобится request-rate на edge). Стуб job на будущее:
+  # - job_name: caddy
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ["caddy:2019"]
+
+  # Postgres exporter — отдельный sidecar; добавь, если нужны метрики БД
+  # (connections, locks, slow queries). См. observability.md.
+  # - job_name: postgres
+  #   static_configs:
+  #     - targets: ["postgres-exporter:9187"]
+
+  # NATS exposes /varz, /jsz, /connz через HTTP-monitor на 8222.
+  # Prometheus может использовать NATS Surveyor либо
+  # `nats-exporter`. Стуб:
+  # - job_name: nats
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ["nats-exporter:7777"]

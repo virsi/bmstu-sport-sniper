@@ -1,0 +1,130 @@
+// Package bmstuv1 описывает gRPC-контракт bmstu-svc — сервис интеграции
+// с BMSTU LKS (Личный кабинет студента) и Keycloak SSO.
+//
+// Зона ответственности:
+//   - Хранение BMSTU-кредов пользователя (AES-256-GCM шифр, master-key из env).
+//   - Pure HTTP Keycloak OIDC (без браузера, ~200ms vs 30–50s Selenium).
+//   - Persist cookiejar в БД, реюз между опросами.
+//   - Получение слотов через `/lks-back/api/v1/fv/{semester_uuid}/groups`.
+//
+// Что НЕ делает: не дедуплицирует слоты (это filter-svc), не алёртит
+// (это notifier-svc), не имеет тикеров (это poller-svc).
+syntax = "proto3";
+
+package bmstu.v1;
+
+import "google/protobuf/timestamp.proto";
+import "common/v1/common.proto";
+
+option go_package = "github.com/fizcultor/backend/gen/bmstu/v1;bmstuv1";
+
+// BmstuService — gRPC-контракт для управления BMSTU-кредами и опроса LKS.
+// Потребители: gateway-svc (UI операций) и poller-svc (FetchGroups).
+service BmstuService {
+  // StoreCredentials сохраняет/перезаписывает BMSTU логин+пароль пользователя.
+  // Креды шифруются AES-256-GCM мастер-ключом сервиса перед записью в БД.
+  // Триггерит немедленный test-login: при провале возвращает UNAUTHENTICATED,
+  // запись не сохраняется.
+  rpc StoreCredentials(StoreCredentialsRequest) returns (StoreCredentialsResponse);
+
+  // DeleteCredentials удаляет креды и связанную сессию пользователя.
+  // Идемпотентен: повторный вызов без кредов = OK.
+  rpc DeleteCredentials(DeleteCredentialsRequest) returns (DeleteCredentialsResponse);
+
+  // GetStatus возвращает состояние привязки BMSTU у юзера.
+  // Используется фронтом для отображения «BMSTU привязан/невалиден».
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+  // FetchGroups делает аутентифицированный запрос к LKS /groups, парсит
+  // ответ и возвращает плоский список слотов. При истёкших cookies — один
+  // авто-reauth, при втором провале — статус becomes INVALID и FAILED_PRECONDITION.
+  //
+  // Вызывается poller-svc для каждого активного юзера в цикле.
+  rpc FetchGroups(FetchGroupsRequest) returns (FetchGroupsResponse);
+
+  // RefreshSession форсирует ре-логин в Keycloak (например после
+  // получения 401 в FetchGroups). Не возвращает слоты.
+  // Возвращает UNAUTHENTICATED если креды стали невалидны.
+  rpc RefreshSession(RefreshSessionRequest) returns (RefreshSessionResponse);
+}
+
+// StoreCredentialsRequest — креды для сохранения.
+// ВАЖНО: эти поля логировать НЕЛЬЗЯ, в middleware redaction обязателен.
+message StoreCredentialsRequest {
+  // user_id — владелец, FK на auth_db.users.
+  string user_id = 1;
+  // login — BMSTU username (обычно email или фамилия+инициалы).
+  string login = 2;
+  // password — plain text BMSTU-пароль, шифруется на стороне сервера.
+  string password = 3;
+}
+
+// StoreCredentialsResponse — итог сохранения.
+message StoreCredentialsResponse {
+  // status — финальный статус после test-login.
+  // Если status != VALID, креды НЕ сохранены, см. ошибку gRPC.
+  common.v1.BmstuLinkStatus status = 1;
+  // last_login_at — момент успешного test-login, UTC.
+  google.protobuf.Timestamp last_login_at = 2;
+}
+
+// DeleteCredentialsRequest — запрос на удаление кредов.
+message DeleteCredentialsRequest {
+  // user_id — владелец кредов.
+  string user_id = 1;
+}
+
+// DeleteCredentialsResponse — пустой ответ.
+message DeleteCredentialsResponse {}
+
+// GetStatusRequest — запрос статуса привязки.
+message GetStatusRequest {
+  // user_id — кого спрашиваем.
+  string user_id = 1;
+}
+
+// GetStatusResponse — детали статуса для UI.
+message GetStatusResponse {
+  // status — текущее состояние привязки.
+  common.v1.BmstuLinkStatus status = 1;
+  // last_login_at — последний успешный логин (валидация в Keycloak), UTC.
+  // Пустой если status == NOT_LINKED.
+  optional google.protobuf.Timestamp last_login_at = 2;
+  // session_expires_at — когда истекут cookies текущей сессии, UTC.
+  // Пустой если сессии нет.
+  optional google.protobuf.Timestamp session_expires_at = 3;
+  // last_error — человеко-читаемая причина INVALID/EXPIRED (для UI).
+  // Не содержит секретов, ОК показывать.
+  optional string last_error = 4;
+}
+
+// FetchGroupsRequest — запрос слотов для пользователя.
+message FetchGroupsRequest {
+  // user_id — от чьего имени делаем запрос (его cookies используются).
+  string user_id = 1;
+}
+
+// FetchGroupsResponse — список слотов на текущий момент.
+message FetchGroupsResponse {
+  // slots — все слоты, как их вернул LKS, БЕЗ дедупликации.
+  // Пустой список — норма (никаких свободных мест), не ошибка.
+  repeated common.v1.Slot slots = 1;
+  // fetched_at — момент успешного ответа LKS, UTC.
+  google.protobuf.Timestamp fetched_at = 2;
+  // semester_uuid — какой семестр был запрошен (берётся из env).
+  string semester_uuid = 3;
+}
+
+// RefreshSessionRequest — форс-рестарт OIDC флоу.
+message RefreshSessionRequest {
+  // user_id — чьи креды переиспользовать.
+  string user_id = 1;
+}
+
+// RefreshSessionResponse — итог reauth.
+message RefreshSessionResponse {
+  // status — новый статус после попытки логина.
+  common.v1.BmstuLinkStatus status = 1;
+  // session_expires_at — новый expires текущих cookies, UTC.
+  optional google.protobuf.Timestamp session_expires_at = 2;
+}

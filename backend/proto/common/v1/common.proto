@@ -1,0 +1,187 @@
+// Package commonv1 содержит общие типы данных, разделяемые между сервисами
+// fizcultor-bot: Slot, Filter, User, Page и базовые перечисления.
+//
+// Принципы:
+//   - Все ID — строки (UUIDv7 для users/filters, синтетический ключ для slots).
+//   - Все временные метки — google.protobuf.Timestamp в UTC.
+//   - Поля, которые могут отсутствовать, помечены `optional` (proto3 presence)
+//     или wrapper-типами. Не используем sentinel-значения.
+//   - Enum'ы всегда имеют нулевое значение `*_UNSPECIFIED` (proto3 default).
+//
+// Версионирование: пакет `common.v1`. При breaking change — новая major-версия.
+syntax = "proto3";
+
+package common.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/fizcultor/backend/gen/common/v1;commonv1";
+
+// DayOfWeek — день недели, используется в Filter.day_of_week.
+// UNSPECIFIED означает «любой день» (фильтр без ограничения по дню).
+enum DayOfWeek {
+  // DAY_OF_WEEK_UNSPECIFIED — фильтр не ограничен по дню недели.
+  DAY_OF_WEEK_UNSPECIFIED = 0;
+  // DAY_OF_WEEK_MONDAY — понедельник.
+  DAY_OF_WEEK_MONDAY = 1;
+  // DAY_OF_WEEK_TUESDAY — вторник.
+  DAY_OF_WEEK_TUESDAY = 2;
+  // DAY_OF_WEEK_WEDNESDAY — среда.
+  DAY_OF_WEEK_WEDNESDAY = 3;
+  // DAY_OF_WEEK_THURSDAY — четверг.
+  DAY_OF_WEEK_THURSDAY = 4;
+  // DAY_OF_WEEK_FRIDAY — пятница.
+  DAY_OF_WEEK_FRIDAY = 5;
+  // DAY_OF_WEEK_SATURDAY — суббота.
+  DAY_OF_WEEK_SATURDAY = 6;
+  // DAY_OF_WEEK_SUNDAY — воскресенье.
+  DAY_OF_WEEK_SUNDAY = 7;
+}
+
+// AlertChannel — канал доставки алёрта пользователю.
+// Используется в notifier-svc и при настройке нотификаций пользователя.
+enum AlertChannel {
+  // ALERT_CHANNEL_UNSPECIFIED — канал не указан (ошибка, не должно встречаться в БД).
+  ALERT_CHANNEL_UNSPECIFIED = 0;
+  // ALERT_CHANNEL_TELEGRAM — личные сообщения Telegram через notifier-svc bot.
+  ALERT_CHANNEL_TELEGRAM = 1;
+  // ALERT_CHANNEL_SSE — server-sent events в браузер через gateway-svc.
+  ALERT_CHANNEL_SSE = 2;
+  // ALERT_CHANNEL_EMAIL — email (V2, зарезервировано).
+  ALERT_CHANNEL_EMAIL = 3;
+  // ALERT_CHANNEL_WEB_PUSH — Web Push с VAPID (V2, зарезервировано).
+  ALERT_CHANNEL_WEB_PUSH = 4;
+}
+
+// BmstuLinkStatus — состояние привязки BMSTU кредов у пользователя.
+enum BmstuLinkStatus {
+  // BMSTU_LINK_STATUS_UNSPECIFIED — статус неизвестен.
+  BMSTU_LINK_STATUS_UNSPECIFIED = 0;
+  // BMSTU_LINK_STATUS_NOT_LINKED — пользователь не вводил BMSTU-креды.
+  BMSTU_LINK_STATUS_NOT_LINKED = 1;
+  // BMSTU_LINK_STATUS_VALID — креды сохранены, последний логин успешен.
+  BMSTU_LINK_STATUS_VALID = 2;
+  // BMSTU_LINK_STATUS_INVALID — креды есть, но Keycloak отвечает 401/403
+  // (юзер сменил пароль или его заблокировали).
+  BMSTU_LINK_STATUS_INVALID = 3;
+  // BMSTU_LINK_STATUS_EXPIRED — сессия истекла, но пароль может быть валиден,
+  // нужен reauth через RefreshSession.
+  BMSTU_LINK_STATUS_EXPIRED = 4;
+}
+
+// User — публичный профиль пользователя сайта.
+// Возвращается из auth-svc.GetMe и далее проксируется через gateway.
+// Никогда не содержит паролей или BMSTU-кредов.
+message User {
+  // id — UUIDv7 пользователя, первичный ключ в auth_db.users.
+  string id = 1;
+  // email — нормализованный (lowercase, trimmed), уникальный.
+  string email = 2;
+  // telegram_chat_id — chat_id Telegram, если пользователь привязал бота.
+  // Заполнен, если LinkTelegramComplete успешно завершён.
+  optional int64 telegram_chat_id = 3;
+  // created_at — момент регистрации, UTC.
+  google.protobuf.Timestamp created_at = 4;
+  // last_seen_at — последний успешный запрос пользователя (для GC poller-svc).
+  google.protobuf.Timestamp last_seen_at = 5;
+}
+
+// Slot — одна ячейка-слот записи на физкультуру, как её отдаёт
+// BMSTU API `/lks-back/api/v1/fv/{SEMESTER_UUID}/groups`.
+//
+// Поле id — синтетический детерминированный ключ
+// (sha1(semester_uuid|week|time|section|teacher_uid)), стабилен между опросами,
+// используется filter-svc для дедупликации.
+message Slot {
+  // id — детерминированный идентификатор слота.
+  string id = 1;
+  // week — номер учебной недели (как в LKS, 1..18).
+  int32 week = 2;
+  // time — строка времени в формате "HH:MM-HH:MM" (как в исходном API).
+  string time = 3;
+  // section — название секции (например "Аэробика", "Силовая").
+  // Optional, потому что LKS иногда возвращает группу без секции.
+  optional string section = 4;
+  // place — место проведения (корпус/зал), как в LKS, без нормализации.
+  string place = 5;
+  // teacher_name — ФИО преподавателя строкой, как пришло из LKS.
+  string teacher_name = 6;
+  // teacher_uid — внутренний BMSTU ID преподавателя, ключ к teachers-svc.
+  // Optional — у некоторых старых записей в LKS uid отсутствует.
+  optional string teacher_uid = 7;
+  // vacancy — количество свободных мест на момент опроса.
+  int32 vacancy = 8;
+  // semester_uuid — UUID семестра в системе LKS (берётся из env конфигурации).
+  string semester_uuid = 9;
+  // day_of_week — день недели слота. Вычисляется в bmstu-svc из week+time+semester.
+  // UNSPECIFIED если вычислить не удалось.
+  DayOfWeek day_of_week = 10;
+}
+
+// Filter — пользовательский фильтр поиска слотов.
+// CRUD'ится через filter-svc, применяется в poller-svc цикле через MatchSlots.
+//
+// Семантика: слот матчится, если выполнены ВСЕ заданные ограничения
+// (логическое AND). Незаданные поля = «любое значение».
+message Filter {
+  // id — UUIDv7 фильтра, первичный ключ.
+  string id = 1;
+  // user_id — владелец фильтра, FK на auth_db.users.id.
+  string user_id = 2;
+  // section — точное совпадение секции (case-insensitive в filter-svc).
+  // Optional, незаданное = любая секция.
+  optional string section = 3;
+  // teacher_uid — точное совпадение по преподавателю.
+  optional string teacher_uid = 4;
+  // day_of_week — ограничение по дню недели. UNSPECIFIED = любой день.
+  DayOfWeek day_of_week = 5;
+  // time_from — нижняя граница времени слота, формат "HH:MM" (включительно).
+  optional string time_from = 6;
+  // time_to — верхняя граница времени слота, формат "HH:MM" (включительно).
+  optional string time_to = 7;
+  // min_rating — минимальный рейтинг преподавателя из teachers-svc (0..5).
+  // Если задан и у слота нет teacher_uid → слот не матчится.
+  optional double min_rating = 8;
+  // enabled — выключенный фильтр сохраняется, но не применяется в матчинге.
+  bool enabled = 9;
+  // created_at — момент создания фильтра, UTC.
+  google.protobuf.Timestamp created_at = 10;
+  // updated_at — момент последнего обновления, UTC.
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+// MatchedSlot — слот, прошедший хотя бы один фильтр пользователя,
+// + список ID фильтров-совпадений (для отображения в UI «почему алёрт»).
+message MatchedSlot {
+  // slot — сам слот, скопированный из bmstu-svc ответа.
+  Slot slot = 1;
+  // matched_filter_ids — какие фильтры пользователя матчат этот слот.
+  // Минимум один элемент (иначе MatchedSlot не создаётся).
+  repeated string matched_filter_ids = 2;
+  // teacher_rating — рейтинг преподавателя из teachers-svc на момент матчинга.
+  // Может быть пустым, если teacher_uid не найден в справочнике.
+  optional double teacher_rating = 3;
+  // is_new — true, если это первое алёртабельное появление слота
+  // для данного пользователя (не в known_slots). False означает повтор.
+  bool is_new = 4;
+}
+
+// PageRequest — стандартные параметры пагинации для List-эндпоинтов.
+// Используется в teachers-svc.List и др.
+message PageRequest {
+  // page_size — желаемый размер страницы. Сервис вправе ограничить сверху.
+  // 0 → дефолт сервиса (обычно 50).
+  int32 page_size = 1;
+  // page_token — непрозрачный курсор от предыдущего ответа.
+  // Пустой → первая страница.
+  string page_token = 2;
+}
+
+// PageResponse — метаданные пагинации в ответе.
+message PageResponse {
+  // next_page_token — курсор для следующей страницы. Пустой = страниц больше нет.
+  string next_page_token = 1;
+  // total_size — общее число элементов в коллекции (если известно, иначе 0).
+  // Best-effort, не транзакционный счётчик.
+  int32 total_size = 2;
+}

@@ -1,0 +1,104 @@
+// Package notifierv1 описывает gRPC-контракт notifier-svc — сервис доставки
+// алёртов пользователю через Telegram bot и Web SSE.
+//
+// Зона ответственности:
+//   - Форматирование сообщений (порт format_message из main.py:209-242).
+//   - Отправка в Telegram через telebot.v3 (long-poll или webhook).
+//   - Публикация в NATS subject `alerts.<user_id>` — gateway-svc подписан
+//     и пересылает в SSE-канал браузера.
+//   - Telegram handlers: /start <code> → AuthService.LinkTelegramComplete.
+//
+// Что НЕ делает: не хранит фильтры/слоты, не дедуплицирует (это filter-svc),
+// не имеет своих тикеров. Принимает «отправь это» команды от poller-svc.
+syntax = "proto3";
+
+package notifier.v1;
+
+import "common/v1/common.proto";
+
+option go_package = "github.com/fizcultor/backend/gen/notifier/v1;notifierv1";
+
+// NotifierService — gRPC-контракт нотификаций.
+// Потребители: poller-svc (NotifyMatched), auth-svc (через NATS для linking),
+// gateway-svc (SendDirect для системных сообщений).
+service NotifierService {
+  // NotifyMatched отправляет алёрт о новых матчнувшихся слотах юзеру по всем
+  // включённым каналам (Telegram + SSE). Не блокирует на каждом канале —
+  // ошибка одного канала не блокирует другие, фиксируется в alert_log.
+  //
+  // Идемпотентность: дедуп уже сделан filter-svc, повторный вызов с тем же
+  // slot_id отправит ещё одно сообщение.
+  rpc NotifyMatched(NotifyMatchedRequest) returns (NotifyMatchedResponse);
+
+  // SendDirect отправляет произвольный текст пользователю (системные
+  // сообщения: «BMSTU пароль невалиден, обнови», «фильтр X удалён» и т.п.).
+  rpc SendDirect(SendDirectRequest) returns (SendDirectResponse);
+
+  // RegisterTelegramChat вызывается изнутри notifier-svc (его TG-handler-а)
+  // при получении /start <code>. По факту обёртка над AuthService.LinkTelegramComplete
+  // плюс приветственное сообщение в чат.
+  //
+  // Эндпоинт выставлен как gRPC, чтобы интеграционные тесты могли симулировать
+  // флоу без реального TG.
+  rpc RegisterTelegramChat(RegisterTelegramChatRequest) returns (RegisterTelegramChatResponse);
+}
+
+// NotifyMatchedRequest — пакет алёртов для одного юзера.
+message NotifyMatchedRequest {
+  // user_id — получатель.
+  string user_id = 1;
+  // matched — слоты, прошедшие фильтры и помеченные is_new=true.
+  // Если пустой — no-op, возвращает OK.
+  repeated common.v1.MatchedSlot matched = 2;
+  // channels — какие каналы использовать. Пустой = все привязанные у юзера.
+  // Например [TELEGRAM] для «только TG», [SSE] для теста.
+  repeated common.v1.AlertChannel channels = 3;
+}
+
+// NotifyMatchedResponse — результат отправки.
+message NotifyMatchedResponse {
+  // delivered_by — каналы, в которые успешно доставлено
+  // (TG ответил OK / NATS publish успешен).
+  repeated common.v1.AlertChannel delivered_by = 1;
+  // failed_by — каналы, упавшие с ошибкой (см. errors_by_channel для деталей).
+  repeated common.v1.AlertChannel failed_by = 2;
+  // errors_by_channel — параллельно failed_by, человеко-читаемые причины.
+  // Длина совпадает с failed_by.
+  repeated string errors_by_channel = 3;
+}
+
+// SendDirectRequest — отправка произвольного текста.
+message SendDirectRequest {
+  // user_id — получатель.
+  string user_id = 1;
+  // text — plain text или Telegram Markdown V2 (см. parse_mode).
+  string text = 2;
+  // parse_mode — формат форматирования для Telegram. Пустой = plain text.
+  // Допустимые: "MarkdownV2", "HTML".
+  optional string parse_mode = 3;
+  // channels — куда отправить. Пустой = все привязанные.
+  repeated common.v1.AlertChannel channels = 4;
+}
+
+// SendDirectResponse — итог отправки.
+message SendDirectResponse {
+  repeated common.v1.AlertChannel delivered_by = 1;
+  repeated common.v1.AlertChannel failed_by = 2;
+  repeated string errors_by_channel = 3;
+}
+
+// RegisterTelegramChatRequest — привязка TG чата (вызывается из TG-handler).
+message RegisterTelegramChatRequest {
+  // code — одноразовый код из /start <code>.
+  string code = 1;
+  // telegram_chat_id — chat_id из update.
+  int64 telegram_chat_id = 2;
+}
+
+// RegisterTelegramChatResponse — итог привязки.
+message RegisterTelegramChatResponse {
+  // user_id — кому привязали (notifier ответит этому юзеру приветствием).
+  string user_id = 1;
+  // welcome_sent — успели ли отправить приветственное сообщение в TG.
+  bool welcome_sent = 2;
+}

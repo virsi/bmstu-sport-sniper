@@ -1,0 +1,31 @@
+// Package oidc — placeholder chromedp fallback на случай добавления
+// reCAPTCHA / WebAuthn в Keycloak BMSTU.
+//
+// Активировать переименованием в fallback.go и добавлением зависимости:
+//
+//	go get github.com/chromedp/chromedp
+//
+// Контракт идентичен `oidc.Client.Login`, чтобы можно было свитчить
+// между pure-HTTP и chromedp по `OIDC_USE_BROWSER=true`.
+//
+// На момент 2026-06-02 не используется: pure-HTTP флоу работает.
+package oidc
+
+// browserLogin запускает headless Chromium, прокидывает username/password
+// в форму Keycloak и возвращает cookies. См. legacy_main.py:78-148.
+//
+// Зачем держим: если LKS добавит reCAPTCHA, мы быстро переключимся.
+// Сигнатура — точная копия Client.Login для drop-in замены.
+//
+// func (c *Client) browserLogin(ctx context.Context, login, password string) (*LoginResult, error) {
+// 	опции chromedp с --headless=new + --no-sandbox + --disable-blink-features=AutomationControlled.
+// 	chromedp.Run(ctx,
+// 		chromedp.Navigate(c.baseURL+"/profile"),
+// 		chromedp.WaitVisible("#username"),
+// 		chromedp.SendKeys("#username", login),
+// 		chromedp.SendKeys("#password", password),
+// 		chromedp.Click("#kc-login"),
+// 		chromedp.WaitVisible(`a[href*="/profile"]`),
+// 	)
+// 	собрать cookies через network.GetAllCookies → конвертить в []*http.Cookie.
+// }

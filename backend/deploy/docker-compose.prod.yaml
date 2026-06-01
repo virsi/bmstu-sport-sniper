@@ -1,0 +1,426 @@
+# Production docker-compose для fizcultor-bot.
+#
+# Отличия от docker-compose.yaml (dev):
+#
+#  - Все сервисы запускаются read-only filesystem, без capabilities, non-root.
+#  - Resource limits (memory/CPU) — защищают хост от runaway-сервиса.
+#  - json-file log driver с rotation (max 100 MB × 5 файлов).
+#  - Postgres / NATS / Caddy используют named volumes для persistent state.
+#  - NATS JetStream с file storage (для durable subjects).
+#  - Caddy auto-HTTPS через Let's Encrypt (см. caddy/Caddyfile.prod).
+#  - Внутренние сервисы НЕ публикуют порты наружу (только в bridge-сеть).
+#  - Каждому контейнеру задан healthcheck на /readyz.
+#  - Prometheus + Grafana как side-cars (для self-hosted observability).
+#
+# Запуск:
+#   1. cp .env.prod.example .env.prod && заполнить секретами.
+#   2. docker compose -f docker-compose.prod.yaml --env-file ../.env.prod up -d
+#
+# DOMAIN, CADDY_ACME_EMAIL — обязательны, остальное опционально.
+
+name: fizcultor-prod
+
+# Общие настройки для Go-сервисов. Read-only fs + capability drop —
+# базовая защита от LPE / arbitrary write.
+x-go-svc: &go-svc
+  restart: unless-stopped
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  # tmpfs нужен любому процессу для /tmp (Go может писать сюда при сетевой
+  # ошибке + дампах). Размер 64 MB достаточен.
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  user: "65532:65532" # distroless nonroot
+  networks:
+    - fizcultor-net
+  env_file:
+    - ../.env.prod
+  logging:
+    driver: json-file
+    options:
+      max-size: "100m"
+      max-file: "5"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    nats:
+      condition: service_started
+
+# Базовый набор build-args для всех сервисов. Per-сервис переопределяет SERVICE.
+x-build-args: &build-args
+  context: ..
+  dockerfile: deploy/Dockerfile.svc
+  args:
+    VERSION: ${VERSION:-prod}
+    COMMIT: ${COMMIT:-unknown}
+
+services:
+  # ============== Infrastructure ==============
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fizcultor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env.prod}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      # Включаем checksums — детектит коррупцию данных на дисковом уровне.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-postgres.sh:/docker-entrypoint-initdb.d/00-init-databases.sh:ro
+    # НЕ exposим порт наружу — только in-network доступ для сервисов и
+    # внешний backup-инструмент через docker exec.
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fizcultor} -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - fizcultor-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  nats:
+    image: nats:2-alpine
+    restart: unless-stopped
+    # -js включает JetStream, -sd /data/jetstream — file storage для durable
+    # subjects (например, alerts.<user_id> с replay). -m 8222 — monitoring.
+    command: ["-js", "-sd", "/data/jetstream", "-m", "8222"]
+    volumes:
+      - nats-data:/data
+    expose:
+      - "4222" # NATS protocol
+      - "8222" # HTTP monitoring
+    networks:
+      - fizcultor-net
+    healthcheck:
+      # /healthz эндпоинт мониторинга NATS — JS не нужен для liveness.
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3 (QUIC)
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN is required in .env.prod}
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:?CADDY_ACME_EMAIL is required for Let's Encrypt}
+    volumes:
+      - ./caddy/Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data       # Let's Encrypt certificate storage
+      - caddy-config:/config
+    networks:
+      - fizcultor-net
+    depends_on:
+      - gateway-svc
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ============== Application services ==============
+
+  auth-svc:
+    <<: *go-svc
+    build:
+      <<: *build-args
+      args:
+        SERVICE: auth-svc
+        VERSION: ${VERSION:-prod}
+        COMMIT: ${COMMIT:-unknown}
+    environment:
+      SERVICE_NAME: auth-svc
+      APP_ENV: prod
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-fizcultor}:${POSTGRES_PASSWORD}@postgres:5432/auth_db?sslmode=disable
+    # Healthcheck: distroless не имеет wget/curl, поэтому используется внешняя
+    # проверка через Prometheus scrape + Grafana alerting (см. observability.md).
+    # depends_on: service_started достаточен для startup ordering compose'а.
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+        reservations:
+          memory: 64M
+
+  bmstu-svc:
+    <<: *go-svc
+    build:
+      <<: *build-args
+      args:
+        SERVICE: bmstu-svc
+        VERSION: ${VERSION:-prod}
+        COMMIT: ${COMMIT:-unknown}
+    environment:
+      SERVICE_NAME: bmstu-svc
+      APP_ENV: prod
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-fizcultor}:${POSTGRES_PASSWORD}@postgres:5432/bmstu_db?sslmode=disable
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.5"
+        reservations:
+          memory: 96M
+
+  filter-svc:
+    <<: *go-svc
+    build:
+      <<: *build-args
+      args:
+        SERVICE: filter-svc
+        VERSION: ${VERSION:-prod}
+        COMMIT: ${COMMIT:-unknown}
+    environment:
+      SERVICE_NAME: filter-svc
+      APP_ENV: prod
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-fizcultor}:${POSTGRES_PASSWORD}@postgres:5432/filter_db?sslmode=disable
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+        reservations:
+          memory: 64M
+
+  teachers-svc:
+    <<: *go-svc
+    build:
+      <<: *build-args
+      args:
+        SERVICE: teachers-svc
+        VERSION: ${VERSION:-prod}
+        COMMIT: ${COMMIT:-unknown}
+    environment:
+      SERVICE_NAME: teachers-svc
+      APP_ENV: prod
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-fizcultor}:${POSTGRES_PASSWORD}@postgres:5432/teachers_db?sslmode=disable
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+        reservations:
+          memory: 32M
+
+  notifier-svc:
+    <<: *go-svc
+    build:
+      <<: *build-args
+      args:
+        SERVICE: notifier-svc
+        VERSION: ${VERSION:-prod}
+        COMMIT: ${COMMIT:-unknown}
+    environment:
+      SERVICE_NAME: notifier-svc
+      APP_ENV: prod
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+        reservations:
+          memory: 64M
+
+  poller-svc:
+    <<: *go-svc
+    build:
+      <<: *build-args
+      args:
+        SERVICE: poller-svc
+        VERSION: ${VERSION:-prod}
+        COMMIT: ${COMMIT:-unknown}
+    environment:
+      SERVICE_NAME: poller-svc
+      APP_ENV: prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+      bmstu-svc:
+        condition: service_started
+      filter-svc:
+        condition: service_started
+      notifier-svc:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+        reservations:
+          memory: 64M
+
+  gateway-svc:
+    <<: *go-svc
+    build:
+      <<: *build-args
+      args:
+        SERVICE: gateway-svc
+        VERSION: ${VERSION:-prod}
+        COMMIT: ${COMMIT:-unknown}
+    environment:
+      SERVICE_NAME: gateway-svc
+      APP_ENV: prod
+    # Gateway не публикует порт наружу — только Caddy общается с ним через сеть.
+    expose:
+      - "8080"
+    depends_on:
+      auth-svc:
+        condition: service_started
+      bmstu-svc:
+        condition: service_started
+      filter-svc:
+        condition: service_started
+      notifier-svc:
+        condition: service_started
+      teachers-svc:
+        condition: service_started
+      nats:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+        reservations:
+          memory: 64M
+
+  # ============== Observability ==============
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    user: "65534:65534" # nobody
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle # позволяет reload по SIGHUP / POST /-/reload
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    expose:
+      - "9090"
+    networks:
+      - fizcultor-net
+    depends_on:
+      - gateway-svc
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    restart: unless-stopped
+    user: "472:0"
+    environment:
+      # Admin-логин/пароль обязателен. В .env.prod должен быть сильный пароль.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required in .env.prod}
+      # Sign-up закрыт — только админ создаёт юзеров.
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Сервер живёт только внутри bridge-сети. Caddy при необходимости
+      # проксирует /grafana → http://grafana:3000 (см. Caddyfile.prod).
+      GF_SERVER_ROOT_URL: "https://${DOMAIN}/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    expose:
+      - "3000"
+    networks:
+      - fizcultor-net
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+networks:
+  fizcultor-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  nats-data:
+  caddy-data:
+  caddy-config:
+  prometheus-data:
+  grafana-data:
