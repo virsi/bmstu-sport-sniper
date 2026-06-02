@@ -1,4 +1,6 @@
 -- +goose Up
+-- +goose StatementBegin
+
 -- bmstu_sessions хранит gob-сериализованный []*http.Cookie пользователя,
 -- зашифрованный AES-256-GCM. cookies_blob = nonce(NonceSize) || ciphertext ||
 -- tag(16) по контракту pkg/crypto.Encrypt (NonceSize = 12, см. pkg/crypto).
@@ -21,3 +23,11 @@ CREATE TABLE IF NOT EXISTS bmstu_sessions (
 
 CREATE INDEX IF NOT EXISTS bmstu_sessions_last_refresh_at_idx
     ON bmstu_sessions (last_refresh_at);
+
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+DROP INDEX IF EXISTS bmstu_sessions_last_refresh_at_idx;
+DROP TABLE IF EXISTS bmstu_sessions;
+-- +goose StatementEnd

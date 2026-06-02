@@ -176,5 +176,5 @@ func safeUint32(n int) (uint32, error) {
 	if uint64(n) > uint64(^uint32(0)) {
 		return 0, fmt.Errorf("auth: length %d overflows uint32", n)
 	}
-	return uint32(n), nil
+	return uint32(n), nil //nolint:gosec // G115 false-positive: проверка диапазона выше
 }

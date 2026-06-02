@@ -1,4 +1,6 @@
 -- +goose Up
+-- +goose StatementBegin
+
 -- bmstu_credentials хранит BMSTU-логин и пароль пользователя, зашифрованные
 -- AES-256-GCM мастер-ключом сервиса. Логин шифруется отдельно от пароля,
 -- каждый со своим nonce (NonceSize = 12 байт, см. pkg/crypto) — это сохраняет
@@ -12,8 +14,8 @@
 -- При decrypt они не используются — pkg/crypto.Decrypt сам нарезает blob
 -- по NonceSize. Не вычищаем дубль из соображений простоты схемы.
 --
--- Логически user_id ссылается на auth_db.users.id (UUIDv7 строка), но
--- физический FK не ставим: auth_db и bmstu_db — разные базы данных
+-- Логически user_id ссылается на auth_db.users.id (BIGSERIAL stringified),
+-- но физический FK не ставим: auth_db и bmstu_db — разные базы данных
 -- (database-per-service по архитектуре).
 CREATE TABLE IF NOT EXISTS bmstu_credentials (
     user_id        TEXT PRIMARY KEY,
@@ -26,6 +28,14 @@ CREATE TABLE IF NOT EXISTS bmstu_credentials (
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- индекс на updated_at пригодится для мониторинга «зависших» кредов
+-- Индекс на updated_at — для мониторинга «зависших» кредов.
 CREATE INDEX IF NOT EXISTS bmstu_credentials_updated_at_idx
     ON bmstu_credentials (updated_at);
+
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+DROP INDEX IF EXISTS bmstu_credentials_updated_at_idx;
+DROP TABLE IF EXISTS bmstu_credentials;
+-- +goose StatementEnd
