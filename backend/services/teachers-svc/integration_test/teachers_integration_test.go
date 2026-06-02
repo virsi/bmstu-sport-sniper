@@ -178,13 +178,16 @@ func TestTeachers_List_NameQuery_Filters(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, all.GetTeachers())
 
-	// Take the first 3 chars of the first teacher's name.
+	// Take the first 3 runes of the first teacher's name. Срез по байтам
+	// (target[:3]) разрушает кириллический UTF-8 — gRPC marshal вернёт
+	// «string field contains invalid UTF-8».
 	target := all.GetTeachers()[0].GetFullName()
-	if len(target) < 3 {
+	runes := []rune(target)
+	if len(runes) < 3 {
 		t.Skip("first teacher name too short for substring filter")
 	}
 
-	q := target[:3]
+	q := string(runes[:3])
 	resp, err := client.List(ctx, &teachersv1.ListRequest{
 		NameQuery: &q,
 	})
