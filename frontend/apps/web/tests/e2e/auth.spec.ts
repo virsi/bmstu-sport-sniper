@@ -6,7 +6,13 @@
  * No real backend is required.
  */
 import { test, expect } from '@playwright/test'
-import { installGatewayMocks, newBackendState } from './fixtures/mocks'
+import {
+  ACCESS_TOKEN_KEY,
+  installGatewayMocks,
+  newBackendState,
+  seedAuthToken,
+  simulateLogout,
+} from './fixtures/mocks'
 
 const email = 'qa@example.com'
 const password = 'password-123'
@@ -54,7 +60,10 @@ test.describe('Authentication flow', () => {
     await expect(page.getByRole('heading', { name: 'Лента слотов' })).toBeVisible()
 
     // Token was persisted in localStorage.
-    const tokenInStorage = await page.evaluate(() => localStorage.getItem('fizcultor:access'))
+    const tokenInStorage = await page.evaluate(
+      (key) => localStorage.getItem(key),
+      ACCESS_TOKEN_KEY,
+    )
     expect(tokenInStorage).not.toBeNull()
   })
 
@@ -79,7 +88,10 @@ test.describe('Authentication flow', () => {
     // Still on the login route.
     await expect(page).toHaveURL(/\/login/)
     // No token persisted.
-    const tokenInStorage = await page.evaluate(() => localStorage.getItem('fizcultor:access'))
+    const tokenInStorage = await page.evaluate(
+      (key) => localStorage.getItem(key),
+      ACCESS_TOKEN_KEY,
+    )
     expect(tokenInStorage).toBeNull()
   })
 
@@ -106,22 +118,18 @@ test.describe('Authentication flow', () => {
     await installGatewayMocks(page, state)
 
     // Seed tokens directly to skip login UI.
-    await page.addInitScript(() => {
-      localStorage.setItem('fizcultor:access', 'fake-access')
-      localStorage.setItem('fizcultor:refresh', 'fake-refresh')
-    })
+    await seedAuthToken(page)
 
     await page.goto('/')
     await expect(page.getByRole('heading', { name: 'Лента слотов' })).toBeVisible()
 
-    // Simulate logout via the auth store (no UI button on dashboard, but the
-    // store is exposed in the SPA — call clearTokens to mirror logout).
-    await page.evaluate(() => {
-      localStorage.removeItem('fizcultor:access')
-      localStorage.removeItem('fizcultor:refresh')
-    })
+    // Simulate logout: clear the access token AND tell the init script to
+    // stop re-injecting it on subsequent navigations (Playwright re-runs
+    // every addInitScript on every full-page load).
+    await simulateLogout(page)
 
-    // Next navigation must redirect to /login.
+    // Next navigation must redirect to /login because the router guard
+    // sees no access token.
     await page.goto('/settings')
     await expect(page).toHaveURL(/\/login/)
   })

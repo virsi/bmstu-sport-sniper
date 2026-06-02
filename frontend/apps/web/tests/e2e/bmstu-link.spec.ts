@@ -8,7 +8,7 @@
  *  - Delete button reverts status to NOT_LINKED.
  */
 import { test, expect } from '@playwright/test'
-import { installGatewayMocks, newBackendState } from './fixtures/mocks'
+import { installGatewayMocks, newBackendState, seedAuthToken } from './fixtures/mocks'
 
 const seededUser = {
   id: '7',
@@ -20,10 +20,7 @@ const seededUser = {
 test.describe('BMSTU credentials linking', () => {
   test.beforeEach(async ({ page }) => {
     // Seed an access token so router guards let us into Settings.
-    await page.addInitScript(() => {
-      localStorage.setItem('fizcultor:access', 'fake-access')
-      localStorage.setItem('fizcultor:refresh', 'fake-refresh')
-    })
+    await seedAuthToken(page)
   })
 
   test('should show NOT_LINKED initially and switch to VALID after submit', async ({ page }) => {
@@ -61,8 +58,10 @@ test.describe('BMSTU credentials linking', () => {
     await page.goto('/settings')
     await expect(page.getByText(/привязан, активен/i)).toBeVisible()
 
-    // Click delete button.
-    await page.getByRole('button', { name: /удалить креды/i }).click()
+    // The delete-creds button shows up only when `bmstu.flags.linked` is true
+    // (Settings.vue conditional `v-if`). Label is "Удалить" (no "креды" suffix);
+    // exact-match regex avoids matching any future "Удалить *" labels nearby.
+    await page.getByRole('button', { name: /^удалить$/i }).click()
 
     await expect.poll(() => state.bmstuLinked).toBe(false)
   })

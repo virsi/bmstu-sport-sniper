@@ -7,7 +7,7 @@
  *  - Delete a filter.
  */
 import { test, expect } from '@playwright/test'
-import { installGatewayMocks, newBackendState } from './fixtures/mocks'
+import { installGatewayMocks, newBackendState, seedAuthToken } from './fixtures/mocks'
 
 const seededUser = {
   id: '7',
@@ -18,10 +18,7 @@ const seededUser = {
 
 test.describe('Filters CRUD', () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => {
-      localStorage.setItem('fizcultor:access', 'fake-access')
-      localStorage.setItem('fizcultor:refresh', 'fake-refresh')
-    })
+    await seedAuthToken(page)
   })
 
   test('should create a new filter and display it in the list', async ({ page }) => {

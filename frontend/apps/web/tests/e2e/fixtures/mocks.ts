@@ -15,6 +15,14 @@
  */
 import type { Page, Route } from '@playwright/test'
 
+/**
+ * LocalStorage key used by the SPA for the access token.
+ *
+ * Mirrors {@link src/api/client.ts#ACCESS_KEY}. Kept here as a literal
+ * to avoid pulling SPA modules into Playwright TS config.
+ */
+export const ACCESS_TOKEN_KEY = 'fizcultor:access'
+
 /** RegisteredUser is the response shape from POST /auth/register. */
 export interface RegisteredUser {
   id: string
@@ -385,4 +393,126 @@ function pickFirstUser(
   // under target=ES2022 without --downlevelIteration.
   const all = Array.from(state.users.values())
   return all[0]
+}
+
+/**
+ * Marker key in `localStorage` that tells {@link seedAuthToken} to stay out
+ * of the way. Set by {@link simulateLogout} so a test can navigate to a
+ * protected route without the init script re-injecting the access token.
+ */
+const LOGOUT_MARKER_KEY = 'fizcultor:e2e:logged-out'
+
+/**
+ * Seeds an access token in `localStorage` so the SPA's router guard treats
+ * the user as authenticated, skipping the UI login flow.
+ *
+ * Why guarded by a `localStorage` marker: Playwright re-runs every init
+ * script on every full navigation (including `page.goto()`). Without the
+ * guard, a test that simulates logout (clears the token, navigates to a
+ * protected route, expects /login redirect) would have the token re-injected
+ * by this very script before the router guard reads it. Tests that want to
+ * exercise logout call {@link simulateLogout}, which sets the marker.
+ *
+ * Why a localStorage marker and not a `window.*` flag: the window object is
+ * recreated on every full navigation. localStorage persists across
+ * navigations within the same origin, so the marker survives the goto().
+ *
+ * Refresh-cookie isn't seeded here — it's httpOnly and would require
+ * `page.context().addCookies(...)`. Tests that need it use the mocked
+ * `/api/auth/login` (which sets the cookie via Set-Cookie).
+ */
+export async function seedAuthToken(page: Page, token = 'fake-access'): Promise<void> {
+  await page.addInitScript(
+    ({ key, value, logoutKey }) => {
+      // If a previous step in the test simulated logout, do NOT re-seed.
+      if (localStorage.getItem(logoutKey) === '1') {
+        return
+      }
+      localStorage.setItem(key, value)
+    },
+    { key: ACCESS_TOKEN_KEY, value: token, logoutKey: LOGOUT_MARKER_KEY },
+  )
+}
+
+/**
+ * Clears the access token and writes a logout marker into `localStorage`
+ * so subsequent navigations don't re-seed it via {@link seedAuthToken}.
+ *
+ * Idiomatic Playwright pattern for "simulate logout, then navigate to a
+ * protected route": without the marker, the init script registered by
+ * {@link seedAuthToken} would re-inject the token on every full navigation.
+ */
+export async function simulateLogout(page: Page): Promise<void> {
+  await page.evaluate(
+    ({ tokenKey, logoutKey }) => {
+      localStorage.setItem(logoutKey, '1')
+      localStorage.removeItem(tokenKey)
+    },
+    { tokenKey: ACCESS_TOKEN_KEY, logoutKey: LOGOUT_MARKER_KEY },
+  )
+}
+
+/**
+ * Installs a controllable shim for `window.EventSource` in the page context.
+ *
+ * The shim:
+ *  - Captures the most recent instance on `window.__sseTest` so tests can
+ *    fire deterministic events via `es.dispatchEvent(new MessageEvent(...))`.
+ *  - Fires the `open` event on the next tick AND triggers `.onopen` (real
+ *    browsers do both; plain EventTarget.dispatchEvent does NOT mirror to
+ *    the `.onX` properties, so we mirror manually).
+ *  - Mirrors `.onerror` similarly so error simulation works if a test needs it.
+ *
+ * Must be called BEFORE `page.goto(...)` because the SPA's slots store
+ * constructs an EventSource as soon as Dashboard mounts.
+ */
+export async function installSseShim(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    class FakeEventSource extends EventTarget {
+      url: string
+      readyState = 0
+      onopen: ((this: EventSource, ev: Event) => unknown) | null = null
+      onerror: ((this: EventSource, ev: Event) => unknown) | null = null
+      onmessage: ((this: EventSource, ev: MessageEvent) => unknown) | null = null
+
+      constructor(url: string) {
+        super()
+        this.url = url
+        // Expose the latest instance to the test runner so it can fire
+        // arbitrary events into the SPA.
+        ;(window as unknown as { __sseTest: FakeEventSource }).__sseTest = this
+        // Fire 'open' asynchronously to give the SPA a tick to attach its
+        // listeners (mirrors how a real EventSource resolves its handshake).
+        setTimeout(() => {
+          this.readyState = 1
+          const evt = new Event('open')
+          this.dispatchEvent(evt)
+          // Real EventSource also invokes the `.onopen` property; plain
+          // EventTarget does not — mirror it manually.
+          if (this.onopen) {
+            this.onopen.call(this as unknown as EventSource, evt)
+          }
+        }, 10)
+      }
+
+      override dispatchEvent(event: Event): boolean {
+        const handled = super.dispatchEvent(event)
+        // Mirror `.onmessage` for default message events; named events bypass
+        // this (the SPA uses `addEventListener('new-slot', ...)`).
+        if (event.type === 'message' && this.onmessage) {
+          this.onmessage.call(this as unknown as EventSource, event as MessageEvent)
+        }
+        if (event.type === 'error' && this.onerror) {
+          this.onerror.call(this as unknown as EventSource, event)
+        }
+        return handled
+      }
+
+      close(): void {
+        this.readyState = 2
+      }
+    }
+    const w = window as unknown as { EventSource: typeof EventSource }
+    w.EventSource = FakeEventSource as unknown as typeof EventSource
+  })
 }

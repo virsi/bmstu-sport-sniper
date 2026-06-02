@@ -1,17 +1,23 @@
 /**
  * slots-sse.spec.ts — verifies the Dashboard SSE flow.
  *
- *  - The dashboard subscribes to /api/stream.
+ *  - The dashboard subscribes to /api/stream after first fetching a one-time
+ *    ticket via POST /api/stream/ticket (see src/api/sse.ts).
  *  - When the server pushes an `event:new-slot`, the slot card appears.
  *  - The "Live-канал активен" indicator turns on.
  *
  * Implementation detail: Playwright `route` cannot stream chunks while
  * keeping the connection open the way EventSource expects. Instead we
- * shim window.EventSource in the page context so we can fire events
- * deterministically from the test.
+ * shim window.EventSource in the page context (see installSseShim in
+ * fixtures/mocks.ts) so we can fire events deterministically from the test.
  */
 import { test, expect } from '@playwright/test'
-import { installGatewayMocks, newBackendState } from './fixtures/mocks'
+import {
+  installGatewayMocks,
+  installSseShim,
+  newBackendState,
+  seedAuthToken,
+} from './fixtures/mocks'
 
 const seededUser = {
   id: '7',
@@ -22,45 +28,11 @@ const seededUser = {
 
 test.describe('Slots SSE stream', () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => {
-      localStorage.setItem('fizcultor:access', 'fake-access')
-      localStorage.setItem('fizcultor:refresh', 'fake-refresh')
-    })
-
-    // Replace EventSource with a controllable stub. The SPA's openSseStream
-    // calls `new EventSource(url)` then attaches handlers via addEventListener.
-    // Our stub captures the last instance on window.__sseTest so the test can
-    // call dispatchEvent('new-slot', payload).
-    await page.addInitScript(() => {
-      type Listener = (e: MessageEvent) => void
-      class FakeEventSource extends EventTarget {
-        url: string
-        readyState = 0
-        listeners: Record<string, Listener[]> = {}
-        constructor(url: string) {
-          super()
-          this.url = url
-          // Mark connected on the next tick so the "open" handler fires after
-          // the SPA finished attaching listeners.
-          setTimeout(() => {
-            this.readyState = 1
-            this.dispatchEvent(new Event('open'))
-          }, 10)
-          ;(window as unknown as { __sseTest: FakeEventSource }).__sseTest = this
-        }
-        addEventListener(name: string, cb: EventListenerOrEventListenerObject): void {
-          const fn = (cb as Listener) ?? (() => undefined)
-          this.listeners[name] ??= []
-          this.listeners[name].push(fn)
-          super.addEventListener(name, cb)
-        }
-        close(): void {
-          this.readyState = 2
-        }
-      }
-      (window as unknown as { EventSource: typeof EventSource }).EventSource =
-        FakeEventSource as unknown as typeof EventSource
-    })
+    await seedAuthToken(page)
+    // Replace EventSource with a controllable stub before any navigation.
+    // The shim exposes the live instance via window.__sseTest so the test
+    // can dispatch named events into it.
+    await installSseShim(page)
   })
 
   test('should show the connection indicator after subscribe', async ({ page }) => {

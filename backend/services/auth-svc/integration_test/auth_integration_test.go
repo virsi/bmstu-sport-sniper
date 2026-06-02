@@ -140,14 +140,18 @@ func TestAuth_Refresh_RotatesTokens(t *testing.T) {
 	require.NotEqual(t, tp1.GetRefreshToken(), tp2.GetRefreshToken(),
 		"refresh must rotate to a new token")
 
-	// Old refresh must now be rejected (single-use).
-	_, err = client.Refresh(ctx, &authv1.RefreshRequest{RefreshToken: tp1.GetRefreshToken()})
-	require.Error(t, err, "old refresh token must not be reusable after rotation")
-
-	// New refresh still works.
+	// Проверяем что новый refresh работает (rotation chain) ДО reuse-проверки:
+	// попытка предъявить старый (revoked) refresh триггерит reuse-detection,
+	// которая по OWASP revoke'ает всю сессию — включая tp2. Подробнее см.
+	// TestAuth_Refresh_ReuseAfterRotation_RevokesEntireSession.
 	tp3, err := client.Refresh(ctx, &authv1.RefreshRequest{RefreshToken: tp2.GetRefreshToken()})
 	require.NoError(t, err, "newly issued refresh should work")
 	require.NotEqual(t, tp2.GetRefreshToken(), tp3.GetRefreshToken())
+
+	// Старый (ротированный) refresh теперь должен быть отклонён.
+	// Это последняя проверка теста — после неё вся сессия revoked.
+	_, err = client.Refresh(ctx, &authv1.RefreshRequest{RefreshToken: tp1.GetRefreshToken()})
+	require.Error(t, err, "old refresh token must not be reusable after rotation")
 }
 
 func TestAuth_Refresh_ReuseAfterRotation_RevokesEntireSession(t *testing.T) {
