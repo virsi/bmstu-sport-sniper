@@ -6,8 +6,9 @@ import type { BmstuCredentials, BmstuStatus, BmstuStatusFlags } from '@/types/ap
 /**
  * Pinia-стор линковки LKS-кредов БМГТУ.
  *
- * Хранит только статус (linked/valid/last_login_at) — сами креды не передаются
- * на фронт никогда. Логин/пароль улетают POST-ом, ответ — только статус.
+ * Хранит только статус (linked/valid/last_login_at/health_group) — сами
+ * креды не передаются на фронт никогда. Логин/пароль улетают POST-ом, ответ —
+ * только статус.
  */
 export const useBmstuStore = defineStore('bmstu', () => {
   const status = ref<BmstuStatus>({ status: 'NOT_LINKED' })
@@ -32,10 +33,14 @@ export const useBmstuStore = defineStore('bmstu', () => {
   }
 
   /**
-   * Сохраняет/обновляет креды LKS. Backend проверяет логин синхронно —
-   * после 204 имеет смысл сразу обновить статус.
+   * Сохраняет/обновляет креды LKS вместе с выбранной группой здоровья.
+   * Backend проверяет логин синхронно — после 204 имеет смысл сразу обновить
+   * статус (включая `health_group`, который вернётся в GET /bmstu/status).
    *
-   * Ошибка 401 — креды отвергнуты Keycloak; 503 — LKS недоступен.
+   * Ошибки:
+   *   - 400 — невалидный `health_group` или пустой login/password.
+   *   - 401 — креды отвергнуты Keycloak.
+   *   - 503 — LKS недоступен.
    */
   async function setCreds(creds: BmstuCredentials): Promise<void> {
     await apiPost<void, BmstuCredentials>('/bmstu/creds', creds, { silent: true })

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useId } from 'vue'
+import { ChevronDown } from 'lucide-vue-next'
 
 /** Один пункт в селекте. */
 export interface SelectOption {
@@ -58,28 +59,34 @@ function onChange(event: Event): void {
       {{ props.label }}
       <span
         v-if="props.required"
-        class="text-red-500"
+        class="text-rose-400"
         aria-hidden="true"
       >*</span>
     </label>
-    <select
-      :id="id"
-      :value="props.modelValue"
-      :disabled="props.disabled"
-      :required="props.required"
-      :aria-invalid="Boolean(props.error)"
-      :aria-describedby="props.error ? `${id}-err` : props.hint ? `${id}-hint` : undefined"
-      class="form-input"
-      @change="onChange"
-    >
-      <option
-        v-for="opt in props.options"
-        :key="opt.value"
-        :value="opt.value"
+    <div class="relative">
+      <select
+        :id="id"
+        :value="props.modelValue"
+        :disabled="props.disabled"
+        :required="props.required"
+        :aria-invalid="Boolean(props.error)"
+        :aria-describedby="props.error ? `${id}-err` : props.hint ? `${id}-hint` : undefined"
+        class="form-input cursor-pointer appearance-none pr-10"
+        @change="onChange"
       >
-        {{ opt.label }}
-      </option>
-    </select>
+        <option
+          v-for="opt in props.options"
+          :key="opt.value"
+          :value="opt.value"
+          class="bg-zinc-900 text-zinc-100"
+        >
+          {{ opt.label }}
+        </option>
+      </select>
+      <span class="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-zinc-500">
+        <ChevronDown class="h-4 w-4" />
+      </span>
+    </div>
     <p
       v-if="props.error"
       :id="`${id}-err`"

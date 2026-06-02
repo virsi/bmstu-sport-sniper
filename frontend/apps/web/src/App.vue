@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { useRouter, RouterLink, RouterView } from 'vue-router'
+import { useRouter, RouterView } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import AppShell from '@/components/AppShell.vue'
 import ToastContainer from '@/components/ToastContainer.vue'
 
 const auth = useAuthStore()
@@ -27,45 +28,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="flex min-h-full flex-col">
-    <header
-      v-if="auth.isAuthenticated"
-      class="border-b border-gray-200 bg-white"
-    >
-      <nav class="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
-        <RouterLink
-          to="/"
-          class="text-lg font-bold text-brand-700"
-        >
-          fizcultor
-        </RouterLink>
-        <div class="flex items-center gap-4 text-sm">
-          <RouterLink
-            to="/"
-            class="text-gray-700 hover:text-brand-600"
-            active-class="text-brand-600"
-          >
-            Лента
-          </RouterLink>
-          <RouterLink
-            to="/filters"
-            class="text-gray-700 hover:text-brand-600"
-            active-class="text-brand-600"
-          >
-            Фильтры
-          </RouterLink>
-          <RouterLink
-            to="/settings"
-            class="text-gray-700 hover:text-brand-600"
-            active-class="text-brand-600"
-          >
-            Настройки
-          </RouterLink>
-        </div>
-      </nav>
-    </header>
-
-    <RouterView class="flex-1" />
+  <div class="relative isolate flex min-h-full flex-col">
+    <!-- Aутентифицированный раздел рендерится в AppShell с sidebar / bottom-bar. -->
+    <AppShell v-if="auth.isAuthenticated" />
+    <!-- Публичные страницы (/login, /register) — без shell, в полный экран. -->
+    <RouterView v-else />
 
     <ToastContainer />
   </div>

@@ -78,4 +78,37 @@ test.describe('BMSTU credentials linking', () => {
     // No backend call was made.
     expect(state.bmstuLinked).toBe(false)
   })
+
+  test('should show read-only summary when linked, then toggle edit form', async ({
+    page,
+  }) => {
+    // Pre-condition: креды уже сохранены — UI должен показать summary,
+    // а не пустую форму (UX-regression от ходьбы между страницами).
+    const state = newBackendState()
+    state.users.set(seededUser.email, { password: 'password-123', user: seededUser })
+    state.bmstuLinked = true
+    state.bmstuHealthGroup = 'PREPARATORY'
+    await installGatewayMocks(page, state)
+
+    await page.goto('/settings')
+
+    // Summary visible: human-readable health group label + status badge.
+    await expect(page.getByText(/привязан, активен/i)).toBeVisible()
+    await expect(page.getByText(/Подготовительная/i)).toBeVisible()
+    // Login/password inputs must NOT be in DOM in read-only mode — иначе
+    // регрессия «пустая форма после возврата» вернётся.
+    await expect(page.getByLabel(/логин/i)).toHaveCount(0)
+    await expect(page.getByLabel(/пароль/i)).toHaveCount(0)
+
+    // Click «Изменить креды» — форма должна появиться, login/password пустые.
+    await page.getByRole('button', { name: /изменить креды/i }).click()
+    await expect(page.getByLabel(/логин/i)).toBeVisible()
+    await expect(page.getByLabel(/логин/i)).toHaveValue('')
+    await expect(page.getByLabel(/пароль/i)).toHaveValue('')
+
+    // «Отмена» возвращает в read-only.
+    await page.getByRole('button', { name: /отмена/i }).click()
+    await expect(page.getByLabel(/логин/i)).toHaveCount(0)
+    await expect(page.getByText(/Подготовительная/i)).toBeVisible()
+  })
 })

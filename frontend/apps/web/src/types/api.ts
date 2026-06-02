@@ -28,6 +28,27 @@ export type DayOfWeek =
 export type BmstuLinkStatus = 'NOT_LINKED' | 'VALID' | 'INVALID' | 'EXPIRED'
 
 /**
+ * Группа здоровья студента БМГТУ для занятий физкультурой.
+ *
+ * Значения совпадают с `common.v1.HealthGroup` (без префикса `HEALTH_GROUP_*`)
+ * и со CHECK в БД (`backend/migrations/bmstu_db/00003_health_group.sql`).
+ * На стороне bmstu-svc определяет, какой `SEMESTER_UUID_*` идёт в LKS API
+ * при FetchGroups.
+ */
+export type HealthGroup = 'BASIC' | 'PREPARATORY' | 'SPECIAL_MEDICAL' | 'AFK'
+
+/**
+ * Человекочитаемые подписи для UI (русский, единый источник для бейджей и
+ * select-опций в Settings).
+ */
+export const HEALTH_GROUP_LABELS: Record<HealthGroup, string> = {
+  BASIC: 'Основная',
+  PREPARATORY: 'Подготовительная',
+  SPECIAL_MEDICAL: 'Специальная медицинская',
+  AFK: 'АФК',
+}
+
+/**
  * Публичный профиль пользователя сайта.
  *
  * Источник: `AuthService.GetMe` через gateway `GET /api/me`.
@@ -140,8 +161,16 @@ export interface Filter {
    * (см. `docs/wave3-brief.md` пункт 2). Coming soon.
    */
   min_rating?: number | null
-  /** Минимум свободных мест. По умолчанию 1. */
-  min_vacancy: number
+  /**
+   * Минимум свободных мест.
+   *
+   * @remarks
+   * Поле есть в БД, но **не экспонируется** proto-контрактом и DTO gateway-svc.
+   * На фронте отображается только при чтении (если backend вернёт), для отправки
+   * не используется — gateway вернёт 400 `unknown field min_vacancy` (см. фикс
+   * 2026-06-02). Coming soon.
+   */
+  min_vacancy?: number
   /** Активность; выключенный фильтр сохраняется, но не матчится. */
   enabled: boolean
   /** ISO-8601 создания. */
@@ -189,6 +218,13 @@ export interface SlotListResponse {
 export interface BmstuStatus {
   /** Статус из enum BmstuLinkStatus. */
   status: BmstuLinkStatus
+  /**
+   * Выбранная юзером группа здоровья.
+   *
+   * Отсутствует/пустая, если креды не сохранены (`status === 'NOT_LINKED'`).
+   * Бэк опускает поле через `omitempty` в этом случае.
+   */
+  health_group?: HealthGroup
   /** ISO-8601, последний успешный логин в LKS. */
   last_login_at?: string | null
   /** ISO-8601, expiry текущей сессии p4sess. */
@@ -205,12 +241,20 @@ export interface BmstuStatusFlags {
   valid: boolean
 }
 
-/** Тело запроса сохранения BMSTU-кредов. */
+/**
+ * Тело запроса сохранения BMSTU-кредов.
+ *
+ * `health_group` обязателен для нового UI (Settings.vue требует выбор группы);
+ * если фронт не передаст поле, бэк подставит дефолт `BASIC` для бэквард-совместимости
+ * с историческими клиентами (см. `bmstuCredsRequest` в gateway-svc).
+ */
 export interface BmstuCredentials {
   /** Логин LKS. */
   login: string
   /** Пароль LKS — на бэке шифруется AES-256-GCM. */
   password: string
+  /** Выбранная юзером группа здоровья — определяет SEMESTER_UUID в bmstu-svc. */
+  health_group: HealthGroup
 }
 
 /**

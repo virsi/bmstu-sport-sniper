@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useId } from 'vue'
+import { useId, useSlots } from 'vue'
 
 /** Пропсы поля ввода. */
 interface Props {
@@ -48,6 +48,10 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: string | number | null): void
 }>()
 
+const slots = useSlots()
+const hasPrefix = Boolean(slots['icon-left'])
+const hasSuffix = Boolean(slots['icon-right'])
+
 const id = useId()
 
 /**
@@ -88,26 +92,44 @@ function toAttrValue(v: string | number | null | undefined): string {
       {{ props.label }}
       <span
         v-if="props.required"
-        class="text-red-500"
+        class="text-rose-400"
         aria-hidden="true"
       >*</span>
     </label>
-    <input
-      :id="id"
-      :type="props.type"
-      :value="toAttrValue(props.modelValue)"
-      :placeholder="props.placeholder"
-      :autocomplete="props.autocomplete"
-      :disabled="props.disabled"
-      :required="props.required"
-      :min="props.min"
-      :max="props.max"
-      :step="props.step"
-      :aria-invalid="Boolean(props.error)"
-      :aria-describedby="props.error ? `${id}-err` : props.hint ? `${id}-hint` : undefined"
-      class="form-input"
-      @input="onInput"
-    >
+    <div class="relative">
+      <div
+        v-if="hasPrefix"
+        class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-zinc-500"
+      >
+        <slot name="icon-left" />
+      </div>
+      <input
+        :id="id"
+        :type="props.type"
+        :value="toAttrValue(props.modelValue)"
+        :placeholder="props.placeholder"
+        :autocomplete="props.autocomplete"
+        :disabled="props.disabled"
+        :required="props.required"
+        :min="props.min"
+        :max="props.max"
+        :step="props.step"
+        :aria-invalid="Boolean(props.error)"
+        :aria-describedby="props.error ? `${id}-err` : props.hint ? `${id}-hint` : undefined"
+        :class="[
+          'form-input',
+          hasPrefix && 'pl-10',
+          hasSuffix && 'pr-10',
+        ]"
+        @input="onInput"
+      >
+      <div
+        v-if="hasSuffix"
+        class="absolute inset-y-0 right-0 flex items-center pr-3 text-zinc-500"
+      >
+        <slot name="icon-right" />
+      </div>
+    </div>
     <p
       v-if="props.error"
       :id="`${id}-err`"

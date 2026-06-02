@@ -1,53 +1,211 @@
+/* === Fonts: Inter (variable) + JetBrains Mono ===
+   Грузим из Google Fonts с font-display: swap, чтобы не было FOIT.
+   Inter — основной sans, JetBrains Mono — monospace для технических лейблов.
+   @import должен идти ПЕРВЫМ (CSS-спека). */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  html,
+  html {
+    @apply h-full;
+    color-scheme: dark;
+  }
+
   body,
   #app {
     @apply h-full;
   }
 
+  html {
+    /* Тёмная тема по умолчанию (см. main.ts инициализирует .dark на <html>). */
+    @apply bg-zinc-950 text-zinc-100 antialiased;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
   body {
     @apply font-sans;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  /* Глобальный фон: тонкая сетка + radial-gradient «ауры» сверху. */
+  body::before {
+    content: '';
+    @apply pointer-events-none fixed inset-0 -z-10 bg-grid-zinc opacity-40;
+  }
+  body::after {
+    content: '';
+    @apply pointer-events-none fixed inset-x-0 top-0 -z-10 h-[600px] bg-gradient-hero;
+  }
+
+  /* Селекшен в брендовом цвете. */
+  ::selection {
+    @apply bg-brand-500/30 text-white;
+  }
+
+  /* Кастомный scrollbar — нативный, но в тон темы. */
+  ::-webkit-scrollbar {
+    @apply h-2 w-2;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-zinc-700/60 hover:bg-zinc-600/80;
+  }
+
+  /* Reduce-motion: отключаем декоративные анимации. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }
 
 @layer components {
+  /* ===== Buttons ===== */
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex select-none items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all duration-200 ease-out;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950;
+    @apply disabled:cursor-not-allowed disabled:opacity-50;
   }
 
   .btn-primary {
-    @apply btn bg-brand-600 text-white hover:bg-brand-700;
+    @apply btn relative overflow-hidden bg-gradient-brand text-white;
+    @apply shadow-glow hover:shadow-glow hover:brightness-110;
+    @apply focus-visible:ring-brand-400;
+    @apply active:scale-[0.98];
+  }
+
+  /* Subtle shimmer on primary button — hover only. */
+  .btn-primary::before {
+    content: '';
+    @apply pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/20 to-transparent transition-transform duration-700;
+  }
+  .btn-primary:hover::before {
+    @apply translate-x-full;
   }
 
   .btn-secondary {
-    @apply btn bg-white text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50;
+    @apply btn border border-zinc-700/80 bg-zinc-900/60 text-zinc-100 backdrop-blur;
+    @apply hover:border-zinc-600 hover:bg-zinc-800/80;
+    @apply focus-visible:ring-zinc-400 active:scale-[0.98];
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent text-zinc-300 hover:bg-zinc-800/60 hover:text-white;
+    @apply focus-visible:ring-zinc-400;
   }
 
   .btn-danger {
-    @apply btn bg-red-600 text-white hover:bg-red-700;
+    @apply btn bg-red-500/90 text-white shadow-elevated;
+    @apply hover:bg-red-500 active:scale-[0.98];
+    @apply focus-visible:ring-red-400;
   }
 
+  /* ===== Forms ===== */
   .form-input {
-    @apply block w-full rounded-md border-0 bg-white px-3 py-2 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-brand-600 sm:text-sm sm:leading-6;
+    @apply block w-full rounded-xl border border-zinc-700/70 bg-zinc-900/50 px-3.5 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500;
+    @apply backdrop-blur-sm transition-all duration-200;
+    @apply focus:border-brand-500/70 focus:bg-zinc-900/80 focus:outline-none focus:ring-4 focus:ring-brand-500/15;
+    @apply disabled:cursor-not-allowed disabled:opacity-50;
+    @apply aria-[invalid=true]:border-red-500/70 aria-[invalid=true]:focus:ring-red-500/15;
   }
 
   .form-label {
-    @apply block text-sm font-medium text-gray-900 mb-1;
+    @apply mb-1.5 block text-xs font-semibold uppercase tracking-wide text-zinc-400;
   }
 
   .form-error {
-    @apply mt-1 text-xs text-red-600;
+    @apply mt-1.5 flex items-center gap-1 text-xs font-medium text-red-400;
   }
 
   .form-hint {
-    @apply mt-1 text-xs text-gray-500;
+    @apply mt-1.5 text-xs text-zinc-500;
   }
 
+  /* ===== Cards / Surfaces ===== */
   .card {
-    @apply rounded-lg border border-gray-200 bg-white p-4 shadow-sm;
+    @apply rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-5 shadow-elevated backdrop-blur-md;
+    @apply transition-colors duration-200;
+  }
+
+  .card-hover {
+    @apply card hover:border-zinc-700 hover:bg-zinc-900/60;
+  }
+
+  .card-glow {
+    @apply card shadow-glow;
+  }
+
+  /* Glass surface (slightly translucent). */
+  .glass {
+    @apply border border-white/10 bg-white/[0.04] backdrop-blur-xl;
+  }
+
+  /* ===== Badges / Pills ===== */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-2xs font-semibold;
+  }
+  .badge-emerald {
+    @apply badge border-emerald-500/30 bg-emerald-500/10 text-emerald-300;
+  }
+  .badge-amber {
+    @apply badge border-amber-500/30 bg-amber-500/10 text-amber-300;
+  }
+  .badge-rose {
+    @apply badge border-rose-500/30 bg-rose-500/10 text-rose-300;
+  }
+  .badge-violet {
+    @apply badge border-violet-500/30 bg-violet-500/10 text-violet-300;
+  }
+  .badge-zinc {
+    @apply badge border-zinc-700 bg-zinc-800/60 text-zinc-300;
+  }
+
+  /* ===== Headings (display-style) ===== */
+  .h-display {
+    @apply font-sans text-4xl font-extrabold tracking-tight text-white sm:text-5xl;
+  }
+  .h-section {
+    @apply font-sans text-2xl font-bold tracking-tight text-zinc-50;
+  }
+
+  /* ===== Live dot (pulsing) ===== */
+  .live-dot {
+    @apply relative inline-flex h-2.5 w-2.5 rounded-full bg-brand-500;
+  }
+  .live-dot::after {
+    content: '';
+    @apply absolute inset-0 animate-pulse-glow rounded-full bg-brand-500/80;
+  }
+}
+
+@layer utilities {
+  /* Shimmer overlay (used by Spinner / skeleton). */
+  .shimmer-bg {
+    background-image: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.08) 40%,
+      rgba(255, 255, 255, 0.15) 50%,
+      rgba(255, 255, 255, 0.08) 60%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    background-size: 200% 100%;
+    @apply animate-shimmer;
+  }
+
+  /* Useful for monospace tabular numbers (vacancies, ratings, time). */
+  .tabular {
+    font-variant-numeric: tabular-nums;
   }
 }

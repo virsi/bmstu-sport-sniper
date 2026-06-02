@@ -71,6 +71,13 @@ export interface FakeFilter {
 export interface BackendState {
   users: Map<string, { password: string; user: RegisteredUser }>
   bmstuLinked: boolean
+  /**
+   * Last-stored health group from POST /bmstu/creds.
+   *
+   * Mirrors `bmstu_credentials.health_group` in bmstu_db. Echoed back in
+   * GET /bmstu/status so the UI badge has a value to render.
+   */
+  bmstuHealthGroup: 'BASIC' | 'PREPARATORY' | 'SPECIAL_MEDICAL' | 'AFK'
   filters: FakeFilter[]
   /** Last-issued access token; the dashboard route validates against this. */
   currentAccess: string
@@ -85,6 +92,7 @@ export function newBackendState(): BackendState {
   return {
     users: new Map(),
     bmstuLinked: false,
+    bmstuHealthGroup: 'BASIC',
     filters: [],
     currentAccess: '',
     currentRefresh: '',
@@ -115,10 +123,16 @@ function issueToken(state: BackendState): AccessTokenResponse {
  * preconditions and read state after interactions.
  */
 export async function installGatewayMocks(page: Page, state: BackendState): Promise<void> {
-  await page.route('**/api/**', async (route: Route) => {
-    const url = new URL(route.request().url())
-    const method = route.request().method()
-    const path = url.pathname.replace(/^\/api/, '')
+  // Перехватываем ТОЛЬКО запросы, у которых pathname НАЧИНАЕТСЯ с /api/.
+  // Раньше был glob `**/api/**`, который ловил и Vite-import-пути вроде
+  // `/src/api/client.ts` (когда тесты запускаются против dev-сервера). Из-за
+  // этого SPA получал 404 на статический импорт и не монтировался.
+  await page.route(
+    (url) => url.pathname.startsWith('/api/'),
+    async (route: Route) => {
+      const url = new URL(route.request().url())
+      const method = route.request().method()
+      const path = url.pathname.replace(/^\/api/, '')
 
     // --- Auth ---
     if (method === 'POST' && path === '/auth/register') {
@@ -257,6 +271,9 @@ export async function installGatewayMocks(page: Page, state: BackendState): Prom
         body: JSON.stringify({
           status: state.bmstuLinked ? 'VALID' : 'NOT_LINKED',
           last_login_at: state.bmstuLinked ? new Date().toISOString() : undefined,
+          // gateway omits empty health_group; mock returns BASIC by default
+          // so the Settings.vue badge has something to render after link.
+          health_group: state.bmstuLinked ? state.bmstuHealthGroup : undefined,
         }),
       })
       return
@@ -266,6 +283,7 @@ export async function installGatewayMocks(page: Page, state: BackendState): Prom
       const body = JSON.parse(route.request().postData() ?? '{}') as {
         login: string
         password: string
+        health_group?: string
       }
       // Accept any non-empty creds in the e2e mock — the real test-login is
       // covered by bmstu-svc integration tests.
@@ -273,13 +291,22 @@ export async function installGatewayMocks(page: Page, state: BackendState): Prom
         await route.fulfill({ status: 400, body: '' })
         return
       }
+      // Validate health_group on write so e2e catches accidental missing-field
+      // regressions (gateway returns 400 for unknown enum values).
+      const validHG = ['BASIC', 'PREPARATORY', 'SPECIAL_MEDICAL', 'AFK']
+      if (body.health_group && !validHG.includes(body.health_group)) {
+        await route.fulfill({ status: 400, body: '' })
+        return
+      }
       state.bmstuLinked = true
+      state.bmstuHealthGroup = (body.health_group as typeof state.bmstuHealthGroup) ?? 'BASIC'
       await route.fulfill({ status: 204, body: '' })
       return
     }
 
     if (method === 'DELETE' && path === '/bmstu/creds') {
       state.bmstuLinked = false
+      state.bmstuHealthGroup = 'BASIC'
       await route.fulfill({ status: 204, body: '' })
       return
     }
@@ -380,7 +407,8 @@ export async function installGatewayMocks(page: Page, state: BackendState): Prom
       contentType: 'application/problem+json',
       body: JSON.stringify({ title: 'unhandled in mock', path }),
     })
-  })
+    },
+  )
 }
 
 // pickFirstUser returns one of the registered users — used by GET /me when
