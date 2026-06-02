@@ -366,7 +366,7 @@ func (s *Service) ResetKnown(ctx context.Context, req *filterv1.ResetKnownReques
 	if n > int64(int32Max) {
 		n = int64(int32Max)
 	}
-	return &filterv1.ResetKnownResponse{ClearedCount: int32(n)}, nil
+	return &filterv1.ResetKnownResponse{ClearedCount: int32(n)}, nil //nolint:gosec // G115 false-positive: n уже clamped до int32Max выше
 }
 
 // ---------------------------------------------------------------------------

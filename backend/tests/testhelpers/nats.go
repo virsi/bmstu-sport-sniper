@@ -35,9 +35,11 @@ var (
 // subjects don't collide because tests publish to user-scoped subjects).
 func startSharedNATS(ctx context.Context) (string, error) {
 	natsOnce.Do(func() {
+		// notifier-svc публикует через core NATS (не JetStream) — флаг
+		// `--jetstream` не нужен и в старых testcontainers-tcnats версиях
+		// передаётся неправильно (контейнер падает с exit 1).
 		c, err := tcnats.Run(ctx,
-			"nats:2-alpine",
-			tcnats.WithArgument("jetstream", ""),
+			"nats:2.10-alpine",
 			testcontainers.WithWaitStrategy(
 				wait.ForLog("Server is ready").
 					WithStartupTimeout(30*time.Second),

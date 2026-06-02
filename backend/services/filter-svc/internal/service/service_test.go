@@ -67,7 +67,7 @@ func (m *mockStore) GetFilterByID(_ context.Context, id int64) (store.Filter, er
 }
 
 func (m *mockStore) ListFiltersByUser(_ context.Context, userID int64, includeDisabled bool) ([]store.Filter, error) {
-	var out []store.Filter
+	out := make([]store.Filter, 0, len(m.filters))
 	for _, f := range m.filters {
 		if f.UserID != userID {
 			continue
