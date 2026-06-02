@@ -65,8 +65,6 @@ type Config struct {
 	PerUserJitter time.Duration
 	// Concurrency — кол-во параллельных опросов юзеров (semaphore).
 	Concurrency int
-	// SemesterUUID — UUID семестра для LKS (диагностика; bmstu-svc сам знает).
-	SemesterUUID string
 }
 
 // DefaultConfig возвращает разумные дефолты.

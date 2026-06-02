@@ -185,13 +185,21 @@ test-login. Если test-login не прошёл — креды не сохра
 ```json
 {
   "login": "ivanov_ii",
-  "password": "BMSTU_password"
+  "password": "BMSTU_password",
+  "health_group": "BASIC"
 }
 ```
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `login` | string | Логин LKS BMSTU. Обязателен. |
+| `password` | string | Пароль LKS BMSTU. Обязателен; на бэке шифруется AES-256-GCM. |
+| `health_group` | enum string | Группа здоровья студента. Одно из `BASIC`, `PREPARATORY`, `SPECIAL_MEDICAL`, `AFK`. Опционально на write — если опущено, bmstu-svc подставит `BASIC` (бэквард-совместимость). Определяет, какой `SEMESTER_UUID_*` пойдёт в LKS при FetchGroups. |
 
 **Response 204:** No Content (успешный test-login, креды сохранены).
 
 **Errors:**
+- 400 — пустые login/password или невалидное значение `health_group`.
 - 401 — креды отвергнуты Keycloak.
 - 503 — LKS недоступен, попробуйте позже.
 
@@ -203,6 +211,7 @@ test-login. Если test-login не прошёл — креды не сохра
 ```json
 {
   "status": "VALID",
+  "health_group": "BASIC",
   "last_login_at": "2026-06-02T10:18:30Z",
   "session_expires_at": "2026-06-02T18:18:30Z"
 }
@@ -210,10 +219,14 @@ test-login. Если test-login не прошёл — креды не сохра
 
 Возможные `status`: `NOT_LINKED`, `VALID`, `INVALID`, `EXPIRED`.
 
+`health_group` — одно из `BASIC`, `PREPARATORY`, `SPECIAL_MEDICAL`, `AFK`.
+Поле опускается, если креды не сохранены (`status == NOT_LINKED`).
+
 При `INVALID` дополнительно:
 ```json
 {
   "status": "INVALID",
+  "health_group": "PREPARATORY",
   "last_error": "Keycloak returned 401: пароль устарел"
 }
 ```

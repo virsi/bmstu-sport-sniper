@@ -64,14 +64,24 @@ func (f *fakeStore) UpsertCredentials(_ context.Context, arg store.UpsertCredent
 		LastLoginAt: arg.LastLoginAt,
 		CreatedAt:   now,
 		UpdatedAt:   now,
+		HealthGroup: arg.HealthGroup,
 	}
 	f.credStatus[arg.UserID] = store.BmstuCredentialStatus{
 		UserID:      arg.UserID,
 		LastLoginAt: arg.LastLoginAt,
 		CreatedAt:   now,
 		UpdatedAt:   now,
+		HealthGroup: arg.HealthGroup,
 	}
 	return nil
+}
+
+func (f *fakeStore) GetCredentials(_ context.Context, userID string) (store.BmstuCredential, error) {
+	c, ok := f.creds[userID]
+	if !ok {
+		return store.BmstuCredential{}, pgx.ErrNoRows
+	}
+	return c, nil
 }
 
 func (f *fakeStore) GetCredentialsStatus(_ context.Context, userID string) (store.BmstuCredentialStatus, error) {
@@ -186,6 +196,25 @@ func (f *fakeGroups) Fetch(_ context.Context, _ *http.Client, _ string) ([]*comm
 
 // --- helpers -----------------------------------------------------------------
 
+// testSemesters имитирует мапу SemesterUUIDFor для всех 4 групп здоровья.
+// Возвращает определённые значения, по которым тест может проверить, что
+// FetchGroups передал правильный UUID в groups.Fetch.
+var testSemesters = map[commonv1.HealthGroup]string{
+	commonv1.HealthGroup_HEALTH_GROUP_BASIC:           "sem-basic",
+	commonv1.HealthGroup_HEALTH_GROUP_PREPARATORY:     "sem-prep",
+	commonv1.HealthGroup_HEALTH_GROUP_SPECIAL_MEDICAL: "sem-smg",
+	commonv1.HealthGroup_HEALTH_GROUP_AFK:             "sem-afk",
+}
+
+// testSemesterFor — резолвер для server.Config.SemesterFor в тестах.
+// UNSPECIFIED трактуется как BASIC (как в реальном Config.SemesterUUIDFor).
+func testSemesterFor(hg commonv1.HealthGroup) string {
+	if v, ok := testSemesters[hg]; ok {
+		return v
+	}
+	return testSemesters[commonv1.HealthGroup_HEALTH_GROUP_BASIC]
+}
+
 func newServerWithMocks(t *testing.T) (*Server, *fakeStore, *fakeManager, *fakeOIDC, *fakeGroups) {
 	t.Helper()
 	st := newFakeStore()
@@ -193,8 +222,8 @@ func newServerWithMocks(t *testing.T) (*Server, *fakeStore, *fakeManager, *fakeO
 	fo := &fakeOIDC{}
 	fg := &fakeGroups{}
 	s, err := New(st, mg, fo, fg, Config{
-		MasterKey:    decodeKey(t),
-		SemesterUUID: "sem-1",
+		MasterKey:   decodeKey(t),
+		SemesterFor: testSemesterFor,
 	})
 	require.NoError(t, err)
 	return s, st, mg, fo, fg
@@ -305,18 +334,69 @@ func TestGetStatus_Expired(t *testing.T) {
 }
 
 func TestFetchGroups_HappyPath(t *testing.T) {
-	s, _, _, _, fg := newServerWithMocks(t)
+	s, st, _, _, fg := newServerWithMocks(t)
+	// Засеваем кредсы юзера, FetchGroups сначала их читает.
+	st.credStatus["u1"] = store.BmstuCredentialStatus{
+		UserID:      "u1",
+		HealthGroup: "BASIC",
+	}
 	slot := &commonv1.Slot{Id: "x", Week: 14}
 	fg.results = []fetchResult{{slots: []*commonv1.Slot{slot}}}
 
 	resp, err := s.FetchGroups(context.Background(), &bmstuv1.FetchGroupsRequest{UserId: "u1"})
 	require.NoError(t, err)
 	require.Len(t, resp.GetSlots(), 1)
-	require.Equal(t, "sem-1", resp.GetSemesterUuid())
+	require.Equal(t, "sem-basic", resp.GetSemesterUuid())
+}
+
+// TestFetchGroups_HealthGroupRoutesSemester проверяет, что 4 разных
+// health_group в БД мапятся в 4 разных SemesterUUID при вызове LKS.
+// Регрессия на основную фичу health_group.
+func TestFetchGroups_HealthGroupRoutesSemester(t *testing.T) {
+	cases := []struct {
+		dbHealthGroup string
+		wantSemester  string
+	}{
+		{"BASIC", "sem-basic"},
+		{"PREPARATORY", "sem-prep"},
+		{"SPECIAL_MEDICAL", "sem-smg"},
+		{"AFK", "sem-afk"},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.dbHealthGroup, func(t *testing.T) {
+			s, st, _, _, fg := newServerWithMocks(t)
+			st.credStatus["u1"] = store.BmstuCredentialStatus{
+				UserID:      "u1",
+				HealthGroup: c.dbHealthGroup,
+			}
+			fg.results = []fetchResult{{slots: nil}}
+			resp, err := s.FetchGroups(context.Background(), &bmstuv1.FetchGroupsRequest{UserId: "u1"})
+			require.NoError(t, err)
+			require.Equal(t, c.wantSemester, resp.GetSemesterUuid())
+		})
+	}
+}
+
+// TestFetchGroups_NoCreds — если в БД нет записи, FetchGroups возвращает
+// FailedPrecondition, не падая с pgx.ErrNoRows наружу.
+func TestFetchGroups_NoCreds(t *testing.T) {
+	s, _, _, _, _ := newServerWithMocks(t)
+	_, err := s.FetchGroups(context.Background(), &bmstuv1.FetchGroupsRequest{UserId: "ghost"})
+	require.Equal(t, codes.FailedPrecondition, codeOf(t, err))
+}
+
+// seedCreds — хелпер, делающий минимальные кредсы для FetchGroups-тестов.
+func seedCreds(st *fakeStore, userID string) {
+	st.credStatus[userID] = store.BmstuCredentialStatus{
+		UserID:      userID,
+		HealthGroup: "BASIC",
+	}
 }
 
 func TestFetchGroups_RetryAfterSessionExpired(t *testing.T) {
-	s, _, mg, _, fg := newServerWithMocks(t)
+	s, st, mg, _, fg := newServerWithMocks(t)
+	seedCreds(st, "u1")
 	// Первый Fetch — expired, второй — успех.
 	fg.results = []fetchResult{
 		{err: oidc.ErrSessionExpired},
@@ -332,7 +412,8 @@ func TestFetchGroups_RetryAfterSessionExpired(t *testing.T) {
 }
 
 func TestFetchGroups_RetryFailsTwice(t *testing.T) {
-	s, _, _, _, fg := newServerWithMocks(t)
+	s, st, _, _, fg := newServerWithMocks(t)
+	seedCreds(st, "u1")
 	fg.results = []fetchResult{
 		{err: oidc.ErrSessionExpired},
 		{err: oidc.ErrSessionExpired},
@@ -342,7 +423,8 @@ func TestFetchGroups_RetryFailsTwice(t *testing.T) {
 }
 
 func TestFetchGroups_NotLinked(t *testing.T) {
-	s, _, mg, _, _ := newServerWithMocks(t)
+	s, st, mg, _, _ := newServerWithMocks(t)
+	seedCreds(st, "u1")
 	mg.acquireErrs = []error{session.ErrCredentialsNotLinked}
 
 	_, err := s.FetchGroups(context.Background(), &bmstuv1.FetchGroupsRequest{UserId: "u1"})
@@ -350,7 +432,8 @@ func TestFetchGroups_NotLinked(t *testing.T) {
 }
 
 func TestFetchGroups_RateLimited(t *testing.T) {
-	s, _, _, _, fg := newServerWithMocks(t)
+	s, st, _, _, fg := newServerWithMocks(t)
+	seedCreds(st, "u1")
 	fg.results = []fetchResult{{err: oidc.ErrRateLimited}}
 	_, err := s.FetchGroups(context.Background(), &bmstuv1.FetchGroupsRequest{UserId: "u1"})
 	require.Equal(t, codes.ResourceExhausted, codeOf(t, err))
@@ -376,15 +459,56 @@ func TestRefreshSession_BadCreds(t *testing.T) {
 
 func TestNew_RejectsBadKey(t *testing.T) {
 	_, err := New(newFakeStore(), &fakeManager{}, &fakeOIDC{}, &fakeGroups{}, Config{
-		MasterKey:    []byte("short"),
-		SemesterUUID: "sem-1",
+		MasterKey:   []byte("short"),
+		SemesterFor: testSemesterFor,
 	})
 	require.Error(t, err)
 }
 
-func TestNew_RejectsEmptySemester(t *testing.T) {
+func TestNew_RejectsNilSemesterResolver(t *testing.T) {
 	_, err := New(newFakeStore(), &fakeManager{}, &fakeOIDC{}, &fakeGroups{}, Config{
 		MasterKey: decodeKey(t),
 	})
 	require.Error(t, err)
+}
+
+func TestStoreCredentials_PersistsHealthGroup(t *testing.T) {
+	s, st, _, _, _ := newServerWithMocks(t)
+
+	_, err := s.StoreCredentials(context.Background(), &bmstuv1.StoreCredentialsRequest{
+		UserId:      "u1",
+		Login:       "ivan",
+		Password:    "p@ss",
+		HealthGroup: commonv1.HealthGroup_HEALTH_GROUP_PREPARATORY,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "PREPARATORY", st.creds["u1"].HealthGroup)
+	require.Equal(t, "PREPARATORY", st.credStatus["u1"].HealthGroup)
+}
+
+// TestStoreCredentials_UnspecifiedDefaultsBasic — UNSPECIFIED enum
+// нормализуется в "BASIC" (соответствует DEFAULT в схеме).
+func TestStoreCredentials_UnspecifiedDefaultsBasic(t *testing.T) {
+	s, st, _, _, _ := newServerWithMocks(t)
+
+	_, err := s.StoreCredentials(context.Background(), &bmstuv1.StoreCredentialsRequest{
+		UserId:   "u1",
+		Login:    "ivan",
+		Password: "p@ss",
+		// HealthGroup намеренно опущен → UNSPECIFIED.
+	})
+	require.NoError(t, err)
+	require.Equal(t, "BASIC", st.creds["u1"].HealthGroup)
+}
+
+func TestGetStatus_ReturnsHealthGroup(t *testing.T) {
+	s, st, _, _, _ := newServerWithMocks(t)
+	st.credStatus["u1"] = store.BmstuCredentialStatus{
+		UserID:      "u1",
+		HealthGroup: "AFK",
+	}
+
+	resp, err := s.GetStatus(context.Background(), &bmstuv1.GetStatusRequest{UserId: "u1"})
+	require.NoError(t, err)
+	require.Equal(t, commonv1.HealthGroup_HEALTH_GROUP_AFK, resp.GetHealthGroup())
 }

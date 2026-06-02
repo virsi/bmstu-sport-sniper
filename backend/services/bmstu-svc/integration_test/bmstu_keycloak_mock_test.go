@@ -163,8 +163,11 @@ func startBmstuRig(t *testing.T, validUser, validPassword string) *bmstuTestRig 
 	require.NoError(t, err)
 
 	srv, err := bmstuserver.New(queries, mgr, oidcClient, stubGroupsClient{}, bmstuserver.Config{
-		MasterKey:    masterKey,
-		SemesterUUID: "test-semester-uuid",
+		MasterKey: masterKey,
+		// В integration-тестах все 4 группы маппятся в один UUID — нас
+		// интересует основной флоу credentials/session, а не routing по
+		// health_group (это покрывают unit-тесты).
+		SemesterFor: func(commonv1.HealthGroup) string { return "test-semester-uuid" },
 	})
 	require.NoError(t, err, "build bmstu server")
 

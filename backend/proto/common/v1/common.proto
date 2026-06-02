@@ -53,6 +53,26 @@ enum AlertChannel {
   ALERT_CHANNEL_WEB_PUSH = 4;
 }
 
+// HealthGroup — группа здоровья студента БМГТУ для занятий физкультурой.
+// От группы зависит UUID семестра в LKS (`SEMESTER_UUID_*` env), т.к. каждая
+// группа учится по своему расписанию.
+//
+// Источник истинности: справка из деканата у самого студента; на сайте LKS
+// группа отражена в личном кабинете, но в API не отдаётся, поэтому юзер
+// выбирает её сам при сохранении BMSTU-кредов.
+enum HealthGroup {
+  // HEALTH_GROUP_UNSPECIFIED — не указана, bmstu-svc подставит дефолт BASIC.
+  HEALTH_GROUP_UNSPECIFIED = 0;
+  // HEALTH_GROUP_BASIC — Основная группа (без ограничений по здоровью).
+  HEALTH_GROUP_BASIC = 1;
+  // HEALTH_GROUP_PREPARATORY — Подготовительная (лёгкие ограничения).
+  HEALTH_GROUP_PREPARATORY = 2;
+  // HEALTH_GROUP_SPECIAL_MEDICAL — Специальная медицинская (СМГ).
+  HEALTH_GROUP_SPECIAL_MEDICAL = 3;
+  // HEALTH_GROUP_AFK — Адаптивная физкультура (АФК).
+  HEALTH_GROUP_AFK = 4;
+}
+
 // BmstuLinkStatus — состояние привязки BMSTU кредов у пользователя.
 enum BmstuLinkStatus {
   // BMSTU_LINK_STATUS_UNSPECIFIED — статус неизвестен.

@@ -18,6 +18,10 @@ import (
 // уже начинается с nonce). Колонки оставлены для аудита/наблюдаемости и
 // симметрии со схемой; при расшифровке НЕ используются — pkg/crypto.Decrypt
 // сам нарезает blob по NonceSize.
+//
+// HealthGroup — строковое значение группы здоровья (одно из 4-х; см.
+// CHECK в migrations/bmstu_db/00003_health_group.sql). bmstu-svc мапит на
+// common.v1.HealthGroup через internal/health.
 type BmstuCredential struct {
 	UserID        string     `json:"user_id"`
 	EncLogin      []byte     `json:"enc_login"`
@@ -27,14 +31,18 @@ type BmstuCredential struct {
 	LastLoginAt   *time.Time `json:"last_login_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
+	HealthGroup   string     `json:"health_group"`
 }
 
 // BmstuCredentialStatus — компактный snapshot без секретов.
+//
+// HealthGroup — строковое значение группы здоровья (см. BmstuCredential).
 type BmstuCredentialStatus struct {
 	UserID      string     `json:"user_id"`
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+	HealthGroup string     `json:"health_group"`
 }
 
 // BmstuSession — строка таблицы bmstu_sessions.

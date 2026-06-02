@@ -103,7 +103,6 @@ func run() error {
 		Jitter:        time.Duration(cfg.JitterSeconds) * time.Second,
 		PerUserJitter: time.Duration(cfg.PerUserJitterSeconds) * time.Second,
 		Concurrency:   cfg.Concurrency,
-		SemesterUUID:  cfg.SemesterUUID,
 	}, orchestrator.Deps{
 		Auth:     authv1.NewAuthServiceClient(authConn),
 		Bmstu:    bmstuv1.NewBmstuServiceClient(bmstuConn),

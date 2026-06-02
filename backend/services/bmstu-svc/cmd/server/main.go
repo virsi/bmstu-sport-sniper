@@ -109,9 +109,9 @@ func run() error {
 	groupsClient := groups.New(cfg.LKSBaseURL)
 
 	bmstuSrv, err := server.New(queries, manager, oidcClient, groupsClient, server.Config{
-		MasterKey:    masterKey,
-		SemesterUUID: cfg.SemesterUUID,
-		Logger:       lg,
+		MasterKey:   masterKey,
+		SemesterFor: cfg.SemesterUUIDFor,
+		Logger:      lg,
 	})
 	if err != nil {
 		return err

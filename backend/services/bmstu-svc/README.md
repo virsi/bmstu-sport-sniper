@@ -101,7 +101,10 @@ make migrate-up POSTGRES_DSN_BASE=postgres://postgres:postgres@localhost:5432
 | `HTTP_ADDR` | `:8080` | listen-адрес healthz/readyz |
 | `POSTGRES_DSN` | **required** | DSN bmstu_db |
 | `AES_MASTER_KEY` | **required** | 64 hex chars = 32 bytes AES-256 |
-| `SEMESTER_UUID` | **required** | UUID семестра LKS |
+| `SEMESTER_UUID_BASIC` | **required** | UUID семестра LKS для основной группы здоровья |
+| `SEMESTER_UUID_PREPARATORY` | **required** | UUID семестра LKS для подготовительной |
+| `SEMESTER_UUID_SPECIAL_MEDICAL` | **required** | UUID семестра LKS для СМГ |
+| `SEMESTER_UUID_AFK` | **required** | UUID семестра LKS для АФК |
 | `LKS_BASE_URL` | `https://lks.bmstu.ru` | можно подменить для тестов |
 | `OIDC_USE_BROWSER` | `false` | placeholder для future chromedp fallback |
 | `HTTP_CLIENT_TIMEOUT_SECONDS` | `15` | таймаут запроса к LKS |
@@ -117,7 +120,12 @@ openssl rand -hex 32
 
 ```sh
 export AES_MASTER_KEY="$(openssl rand -hex 32)"
-export SEMESTER_UUID="<UUID-семестра-из-LKS>"
+# По одному UUID на каждую группу здоровья. До получения реальных значений
+# из деканата допустимо задать одно и то же значение во все 4.
+export SEMESTER_UUID_BASIC="<UUID-семестра-основной-группы>"
+export SEMESTER_UUID_PREPARATORY="<UUID-семестра-подготовительной>"
+export SEMESTER_UUID_SPECIAL_MEDICAL="<UUID-семестра-СМГ>"
+export SEMESTER_UUID_AFK="<UUID-семестра-АФК>"
 export POSTGRES_DSN="postgres://postgres:postgres@localhost:5432/bmstu_db?sslmode=disable"
 cd services/bmstu-svc
 go run ./cmd/server

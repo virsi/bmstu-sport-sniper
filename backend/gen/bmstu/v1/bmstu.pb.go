@@ -36,7 +36,8 @@ const (
 )
 
 // StoreCredentialsRequest — креды для сохранения.
-// ВАЖНО: эти поля логировать НЕЛЬЗЯ, в middleware redaction обязателен.
+// ВАЖНО: login/password логировать НЕЛЬЗЯ, в middleware redaction обязателен.
+// health_group — НЕ секрет, спокойно идёт в логи.
 type StoreCredentialsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// user_id — владелец, FK на auth_db.users.
@@ -44,7 +45,11 @@ type StoreCredentialsRequest struct {
 	// login — BMSTU username (обычно email или фамилия+инициалы).
 	Login string `protobuf:"bytes,2,opt,name=login,proto3" json:"login,omitempty"`
 	// password — plain text BMSTU-пароль, шифруется на стороне сервера.
-	Password      string `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
+	Password string `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
+	// health_group — группа здоровья студента. Определяет, какой UUID семестра
+	// bmstu-svc подставит в LKS API при FetchGroups. UNSPECIFIED трактуется как
+	// BASIC (см. SemesterUUIDFor в bmstu-svc/internal/config).
+	HealthGroup   v1.HealthGroup `protobuf:"varint,4,opt,name=health_group,json=healthGroup,proto3,enum=common.v1.HealthGroup" json:"health_group,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -98,6 +103,13 @@ func (x *StoreCredentialsRequest) GetPassword() string {
 		return x.Password
 	}
 	return ""
+}
+
+func (x *StoreCredentialsRequest) GetHealthGroup() v1.HealthGroup {
+	if x != nil {
+		return x.HealthGroup
+	}
+	return v1.HealthGroup(0)
 }
 
 // StoreCredentialsResponse — итог сохранения.
@@ -298,7 +310,10 @@ type GetStatusResponse struct {
 	SessionExpiresAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=session_expires_at,json=sessionExpiresAt,proto3,oneof" json:"session_expires_at,omitempty"`
 	// last_error — человеко-читаемая причина INVALID/EXPIRED (для UI).
 	// Не содержит секретов, ОК показывать.
-	LastError     *string `protobuf:"bytes,4,opt,name=last_error,json=lastError,proto3,oneof" json:"last_error,omitempty"`
+	LastError *string `protobuf:"bytes,4,opt,name=last_error,json=lastError,proto3,oneof" json:"last_error,omitempty"`
+	// health_group — выбранная юзером группа здоровья (для UI badge).
+	// UNSPECIFIED если креды не сохранены (status == NOT_LINKED).
+	HealthGroup   v1.HealthGroup `protobuf:"varint,5,opt,name=health_group,json=healthGroup,proto3,enum=common.v1.HealthGroup" json:"health_group,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -359,6 +374,13 @@ func (x *GetStatusResponse) GetLastError() string {
 		return *x.LastError
 	}
 	return ""
+}
+
+func (x *GetStatusResponse) GetHealthGroup() v1.HealthGroup {
+	if x != nil {
+		return x.HealthGroup
+	}
+	return v1.HealthGroup(0)
 }
 
 // FetchGroupsRequest — запрос слотов для пользователя.
@@ -577,11 +599,12 @@ var File_bmstu_v1_bmstu_proto protoreflect.FileDescriptor
 
 const file_bmstu_v1_bmstu_proto_rawDesc = "" +
 	"\n" +
-	"\x14bmstu/v1/bmstu.proto\x12\bbmstu.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x16common/v1/common.proto\"d\n" +
+	"\x14bmstu/v1/bmstu.proto\x12\bbmstu.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x16common/v1/common.proto\"\x9f\x01\n" +
 	"\x17StoreCredentialsRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x14\n" +
 	"\x05login\x18\x02 \x01(\tR\x05login\x12\x1a\n" +
-	"\bpassword\x18\x03 \x01(\tR\bpassword\"\x8e\x01\n" +
+	"\bpassword\x18\x03 \x01(\tR\bpassword\x129\n" +
+	"\fhealth_group\x18\x04 \x01(\x0e2\x16.common.v1.HealthGroupR\vhealthGroup\"\x8e\x01\n" +
 	"\x18StoreCredentialsResponse\x122\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x1a.common.v1.BmstuLinkStatusR\x06status\x12>\n" +
 	"\rlast_login_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\vlastLoginAt\"3\n" +
@@ -589,13 +612,14 @@ const file_bmstu_v1_bmstu_proto_rawDesc = "" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\"\x1b\n" +
 	"\x19DeleteCredentialsResponse\"+\n" +
 	"\x10GetStatusRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\"\xb7\x02\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\"\xf2\x02\n" +
 	"\x11GetStatusResponse\x122\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x1a.common.v1.BmstuLinkStatusR\x06status\x12C\n" +
 	"\rlast_login_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\vlastLoginAt\x88\x01\x01\x12M\n" +
 	"\x12session_expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampH\x01R\x10sessionExpiresAt\x88\x01\x01\x12\"\n" +
 	"\n" +
-	"last_error\x18\x04 \x01(\tH\x02R\tlastError\x88\x01\x01B\x10\n" +
+	"last_error\x18\x04 \x01(\tH\x02R\tlastError\x88\x01\x01\x129\n" +
+	"\fhealth_group\x18\x05 \x01(\x0e2\x16.common.v1.HealthGroupR\vhealthGroupB\x10\n" +
 	"\x0e_last_login_atB\x15\n" +
 	"\x13_session_expires_atB\r\n" +
 	"\v_last_error\"-\n" +
@@ -643,35 +667,38 @@ var file_bmstu_v1_bmstu_proto_goTypes = []any{
 	(*FetchGroupsResponse)(nil),       // 7: bmstu.v1.FetchGroupsResponse
 	(*RefreshSessionRequest)(nil),     // 8: bmstu.v1.RefreshSessionRequest
 	(*RefreshSessionResponse)(nil),    // 9: bmstu.v1.RefreshSessionResponse
-	(v1.BmstuLinkStatus)(0),           // 10: common.v1.BmstuLinkStatus
-	(*timestamppb.Timestamp)(nil),     // 11: google.protobuf.Timestamp
-	(*v1.Slot)(nil),                   // 12: common.v1.Slot
+	(v1.HealthGroup)(0),               // 10: common.v1.HealthGroup
+	(v1.BmstuLinkStatus)(0),           // 11: common.v1.BmstuLinkStatus
+	(*timestamppb.Timestamp)(nil),     // 12: google.protobuf.Timestamp
+	(*v1.Slot)(nil),                   // 13: common.v1.Slot
 }
 var file_bmstu_v1_bmstu_proto_depIdxs = []int32{
-	10, // 0: bmstu.v1.StoreCredentialsResponse.status:type_name -> common.v1.BmstuLinkStatus
-	11, // 1: bmstu.v1.StoreCredentialsResponse.last_login_at:type_name -> google.protobuf.Timestamp
-	10, // 2: bmstu.v1.GetStatusResponse.status:type_name -> common.v1.BmstuLinkStatus
-	11, // 3: bmstu.v1.GetStatusResponse.last_login_at:type_name -> google.protobuf.Timestamp
-	11, // 4: bmstu.v1.GetStatusResponse.session_expires_at:type_name -> google.protobuf.Timestamp
-	12, // 5: bmstu.v1.FetchGroupsResponse.slots:type_name -> common.v1.Slot
-	11, // 6: bmstu.v1.FetchGroupsResponse.fetched_at:type_name -> google.protobuf.Timestamp
-	10, // 7: bmstu.v1.RefreshSessionResponse.status:type_name -> common.v1.BmstuLinkStatus
-	11, // 8: bmstu.v1.RefreshSessionResponse.session_expires_at:type_name -> google.protobuf.Timestamp
-	0,  // 9: bmstu.v1.BmstuService.StoreCredentials:input_type -> bmstu.v1.StoreCredentialsRequest
-	2,  // 10: bmstu.v1.BmstuService.DeleteCredentials:input_type -> bmstu.v1.DeleteCredentialsRequest
-	4,  // 11: bmstu.v1.BmstuService.GetStatus:input_type -> bmstu.v1.GetStatusRequest
-	6,  // 12: bmstu.v1.BmstuService.FetchGroups:input_type -> bmstu.v1.FetchGroupsRequest
-	8,  // 13: bmstu.v1.BmstuService.RefreshSession:input_type -> bmstu.v1.RefreshSessionRequest
-	1,  // 14: bmstu.v1.BmstuService.StoreCredentials:output_type -> bmstu.v1.StoreCredentialsResponse
-	3,  // 15: bmstu.v1.BmstuService.DeleteCredentials:output_type -> bmstu.v1.DeleteCredentialsResponse
-	5,  // 16: bmstu.v1.BmstuService.GetStatus:output_type -> bmstu.v1.GetStatusResponse
-	7,  // 17: bmstu.v1.BmstuService.FetchGroups:output_type -> bmstu.v1.FetchGroupsResponse
-	9,  // 18: bmstu.v1.BmstuService.RefreshSession:output_type -> bmstu.v1.RefreshSessionResponse
-	14, // [14:19] is the sub-list for method output_type
-	9,  // [9:14] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	10, // 0: bmstu.v1.StoreCredentialsRequest.health_group:type_name -> common.v1.HealthGroup
+	11, // 1: bmstu.v1.StoreCredentialsResponse.status:type_name -> common.v1.BmstuLinkStatus
+	12, // 2: bmstu.v1.StoreCredentialsResponse.last_login_at:type_name -> google.protobuf.Timestamp
+	11, // 3: bmstu.v1.GetStatusResponse.status:type_name -> common.v1.BmstuLinkStatus
+	12, // 4: bmstu.v1.GetStatusResponse.last_login_at:type_name -> google.protobuf.Timestamp
+	12, // 5: bmstu.v1.GetStatusResponse.session_expires_at:type_name -> google.protobuf.Timestamp
+	10, // 6: bmstu.v1.GetStatusResponse.health_group:type_name -> common.v1.HealthGroup
+	13, // 7: bmstu.v1.FetchGroupsResponse.slots:type_name -> common.v1.Slot
+	12, // 8: bmstu.v1.FetchGroupsResponse.fetched_at:type_name -> google.protobuf.Timestamp
+	11, // 9: bmstu.v1.RefreshSessionResponse.status:type_name -> common.v1.BmstuLinkStatus
+	12, // 10: bmstu.v1.RefreshSessionResponse.session_expires_at:type_name -> google.protobuf.Timestamp
+	0,  // 11: bmstu.v1.BmstuService.StoreCredentials:input_type -> bmstu.v1.StoreCredentialsRequest
+	2,  // 12: bmstu.v1.BmstuService.DeleteCredentials:input_type -> bmstu.v1.DeleteCredentialsRequest
+	4,  // 13: bmstu.v1.BmstuService.GetStatus:input_type -> bmstu.v1.GetStatusRequest
+	6,  // 14: bmstu.v1.BmstuService.FetchGroups:input_type -> bmstu.v1.FetchGroupsRequest
+	8,  // 15: bmstu.v1.BmstuService.RefreshSession:input_type -> bmstu.v1.RefreshSessionRequest
+	1,  // 16: bmstu.v1.BmstuService.StoreCredentials:output_type -> bmstu.v1.StoreCredentialsResponse
+	3,  // 17: bmstu.v1.BmstuService.DeleteCredentials:output_type -> bmstu.v1.DeleteCredentialsResponse
+	5,  // 18: bmstu.v1.BmstuService.GetStatus:output_type -> bmstu.v1.GetStatusResponse
+	7,  // 19: bmstu.v1.BmstuService.FetchGroups:output_type -> bmstu.v1.FetchGroupsResponse
+	9,  // 20: bmstu.v1.BmstuService.RefreshSession:output_type -> bmstu.v1.RefreshSessionResponse
+	16, // [16:21] is the sub-list for method output_type
+	11, // [11:16] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_bmstu_v1_bmstu_proto_init() }

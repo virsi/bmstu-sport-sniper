@@ -9,10 +9,10 @@ import (
 //
 //nolint:gosec // G101 false-positive: SQL literal с колонками `enc_password`/`password`, реальных секретов нет.
 const upsertCredentials = `INSERT INTO bmstu_credentials (
-    user_id, enc_login, enc_password, nonce_login, nonce_password, last_login_at, created_at, updated_at
+    user_id, enc_login, enc_password, nonce_login, nonce_password, last_login_at, health_group, created_at, updated_at
 )
 VALUES (
-    $1, $2, $3, $4, $5, $6, now(), now()
+    $1, $2, $3, $4, $5, $6, $7, now(), now()
 )
 ON CONFLICT (user_id) DO UPDATE SET
     enc_login      = EXCLUDED.enc_login,
@@ -20,6 +20,7 @@ ON CONFLICT (user_id) DO UPDATE SET
     nonce_login    = EXCLUDED.nonce_login,
     nonce_password = EXCLUDED.nonce_password,
     last_login_at  = COALESCE(EXCLUDED.last_login_at, bmstu_credentials.last_login_at),
+    health_group   = EXCLUDED.health_group,
     updated_at     = now()`
 
 // UpsertCredentialsParams — параметры UpsertCredentials.
@@ -27,6 +28,10 @@ ON CONFLICT (user_id) DO UPDATE SET
 // NonceLogin / NoncePassword — первые crypto.NonceSize байт EncLogin /
 // EncPassword. Заполняются вызывающим кодом как дубль исключительно для
 // аудита/наблюдаемости (см. BmstuCredential godoc), при decrypt не нужны.
+//
+// HealthGroup — одно из 4 значений (см. CHECK в миграции 00003). Вызывающий
+// код обязан нормализовать через `health.ProtoToDB`, иначе INSERT упадёт с
+// нарушением CHECK.
 type UpsertCredentialsParams struct {
 	UserID        string
 	EncLogin      []byte
@@ -34,6 +39,7 @@ type UpsertCredentialsParams struct {
 	NonceLogin    []byte
 	NoncePassword []byte
 	LastLoginAt   *time.Time
+	HealthGroup   string
 }
 
 // UpsertCredentials вставляет или обновляет креды пользователя.
@@ -45,12 +51,13 @@ func (q *Queries) UpsertCredentials(ctx context.Context, arg UpsertCredentialsPa
 		arg.NonceLogin,
 		arg.NoncePassword,
 		arg.LastLoginAt,
+		arg.HealthGroup,
 	)
 	return err
 }
 
 //nolint:gosec // G101 false-positive: SQL SELECT с колонкой `enc_password`, не секрет.
-const getCredentials = `SELECT user_id, enc_login, enc_password, nonce_login, nonce_password, last_login_at, created_at, updated_at
+const getCredentials = `SELECT user_id, enc_login, enc_password, nonce_login, nonce_password, last_login_at, created_at, updated_at, health_group
 FROM bmstu_credentials
 WHERE user_id = $1`
 
@@ -67,6 +74,7 @@ func (q *Queries) GetCredentials(ctx context.Context, userID string) (BmstuCrede
 		&c.LastLoginAt,
 		&c.CreatedAt,
 		&c.UpdatedAt,
+		&c.HealthGroup,
 	)
 	return c, err
 }
@@ -82,15 +90,16 @@ func (q *Queries) DeleteCredentials(ctx context.Context, userID string) error {
 }
 
 //nolint:gosec // G101 false-positive: SELECT статус-снэпшота из таблицы кредов, не секрет.
-const getCredentialsStatus = `SELECT user_id, last_login_at, created_at, updated_at
+const getCredentialsStatus = `SELECT user_id, last_login_at, created_at, updated_at, health_group
 FROM bmstu_credentials
 WHERE user_id = $1`
 
 // GetCredentialsStatus возвращает статус-snapshot без расшифровки полей.
+// Возвращает HealthGroup для отображения в UI без чтения зашифрованных полей.
 func (q *Queries) GetCredentialsStatus(ctx context.Context, userID string) (BmstuCredentialStatus, error) {
 	row := q.db.QueryRow(ctx, getCredentialsStatus, userID)
 	var s BmstuCredentialStatus
-	err := row.Scan(&s.UserID, &s.LastLoginAt, &s.CreatedAt, &s.UpdatedAt)
+	err := row.Scan(&s.UserID, &s.LastLoginAt, &s.CreatedAt, &s.UpdatedAt, &s.HealthGroup)
 	return s, err
 }
 

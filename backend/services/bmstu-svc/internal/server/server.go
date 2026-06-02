@@ -23,6 +23,7 @@ import (
 	commonv1 "github.com/fizcultor/backend/gen/common/v1"
 	"github.com/fizcultor/backend/pkg/crypto"
 
+	"github.com/fizcultor/backend/services/bmstu-svc/internal/health"
 	"github.com/fizcultor/backend/services/bmstu-svc/internal/oidc"
 	"github.com/fizcultor/backend/services/bmstu-svc/internal/session"
 	"github.com/fizcultor/backend/services/bmstu-svc/internal/store"
@@ -31,6 +32,7 @@ import (
 // Store — узкий контракт, нужный серверу.
 type Store interface {
 	UpsertCredentials(ctx context.Context, arg store.UpsertCredentialsParams) error
+	GetCredentials(ctx context.Context, userID string) (store.BmstuCredential, error)
 	GetCredentialsStatus(ctx context.Context, userID string) (store.BmstuCredentialStatus, error)
 	DeleteCredentials(ctx context.Context, userID string) error
 	GetSession(ctx context.Context, userID string) (store.BmstuSession, error)
@@ -54,11 +56,20 @@ type GroupsClient interface {
 	Fetch(ctx context.Context, hc *http.Client, semesterUUID string) ([]*commonv1.Slot, error)
 }
 
+// SemesterResolver выбирает UUID семестра LKS по группе здоровья.
+// На практике — метод *config.Config.SemesterUUIDFor; интерфейс развязывает
+// server-пакет от конкретного конфига и упрощает тесты.
+type SemesterResolver func(commonv1.HealthGroup) string
+
 // Config — параметры конструктора.
+//
+// SemesterFor должен возвращать НЕ пустую строку для всех валидных значений
+// HealthGroup, иначе FetchGroups вернёт Internal. Реализация по умолчанию —
+// (*config.Config).SemesterUUIDFor.
 type Config struct {
-	MasterKey    []byte
-	SemesterUUID string
-	Logger       *slog.Logger
+	MasterKey   []byte
+	SemesterFor SemesterResolver
+	Logger      *slog.Logger
 }
 
 // Server — реализация BmstuServiceServer.
@@ -78,8 +89,8 @@ func New(st Store, mgr SessionManager, o OIDCClient, gc GroupsClient, cfg Config
 	if len(cfg.MasterKey) != crypto.KeySize {
 		return nil, crypto.ErrKeySize
 	}
-	if cfg.SemesterUUID == "" {
-		return nil, errors.New("server: empty SemesterUUID")
+	if cfg.SemesterFor == nil {
+		return nil, errors.New("server: nil SemesterFor resolver")
 	}
 	log := cfg.Logger
 	if log == nil {
@@ -89,7 +100,7 @@ func New(st Store, mgr SessionManager, o OIDCClient, gc GroupsClient, cfg Config
 }
 
 // StoreCredentials шифрует креды, валидирует через test-login и сохраняет.
-// Никогда не логирует password.
+// Никогда не логирует password. health_group логировать ОК (не секрет).
 func (s *Server) StoreCredentials(ctx context.Context, req *bmstuv1.StoreCredentialsRequest) (*bmstuv1.StoreCredentialsResponse, error) {
 	if req.GetUserId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
@@ -98,10 +109,14 @@ func (s *Server) StoreCredentials(ctx context.Context, req *bmstuv1.StoreCredent
 		return nil, status.Error(codes.InvalidArgument, "login and password are required")
 	}
 
+	// UNSPECIFIED → BASIC (бэкворд-совместимость + дефолт схемы БД).
+	hgDB := health.ProtoToDB(req.GetHealthGroup())
+
 	// Шаг 1: тест-логин ДО шифрования (если креды плохие, нечего и сохранять).
 	if _, err := s.oidc.Login(ctx, req.GetLogin(), req.GetPassword()); err != nil {
 		s.log.Warn("store_credentials: test login failed",
 			slog.String("user_id", req.GetUserId()),
+			slog.String("health_group", hgDB),
 			slog.String("result", "auth_error"),
 		)
 		return nil, mapOIDCError(err)
@@ -126,9 +141,11 @@ func (s *Server) StoreCredentials(ctx context.Context, req *bmstuv1.StoreCredent
 		NonceLogin:    encL[:crypto.NonceSize],
 		NoncePassword: encP[:crypto.NonceSize],
 		LastLoginAt:   &now,
+		HealthGroup:   hgDB,
 	}); err != nil {
 		s.log.Error("store_credentials: upsert failed",
 			slog.String("user_id", req.GetUserId()),
+			slog.String("health_group", hgDB),
 			slog.Any("error", err),
 		)
 		return nil, status.Errorf(codes.Internal, "store creds: %v", err)
@@ -136,6 +153,7 @@ func (s *Server) StoreCredentials(ctx context.Context, req *bmstuv1.StoreCredent
 
 	s.log.Info("store_credentials: ok",
 		slog.String("user_id", req.GetUserId()),
+		slog.String("health_group", hgDB),
 		slog.String("result", "ok"),
 	)
 	return &bmstuv1.StoreCredentialsResponse{
@@ -173,7 +191,8 @@ func (s *Server) GetStatus(ctx context.Context, req *bmstuv1.GetStatusRequest) (
 	}
 
 	resp := &bmstuv1.GetStatusResponse{
-		Status: commonv1.BmstuLinkStatus_BMSTU_LINK_STATUS_VALID,
+		Status:      commonv1.BmstuLinkStatus_BMSTU_LINK_STATUS_VALID,
+		HealthGroup: health.DBToProto(creds.HealthGroup),
 	}
 	if creds.LastLoginAt != nil {
 		resp.LastLoginAt = timestamppb.New(*creds.LastLoginAt)
@@ -193,12 +212,29 @@ func (s *Server) GetStatus(ctx context.Context, req *bmstuv1.GetStatusRequest) (
 
 // FetchGroups: один retry при истёкшей сессии.
 //
-//  1. Acquire → запрос /groups.
-//  2. Если ErrSessionExpired → Invalidate + Refresh → повторный запрос.
-//  3. Если и тут ErrSessionExpired/ErrBadCredentials — Unavailable/Unauthenticated.
+//  1. Прочитать health_group юзера → выбрать SemesterUUID.
+//  2. Acquire → запрос /groups.
+//  3. Если ErrSessionExpired → Invalidate + Refresh → повторный запрос.
+//  4. Если и тут ErrSessionExpired/ErrBadCredentials — Unavailable/Unauthenticated.
+//
+// Если у юзера нет кредов (pgx.ErrNoRows) — FailedPrecondition,
+// семантически эквивалентно session.ErrCredentialsNotLinked.
 func (s *Server) FetchGroups(ctx context.Context, req *bmstuv1.FetchGroupsRequest) (*bmstuv1.FetchGroupsResponse, error) {
 	if req.GetUserId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	}
+
+	creds, err := s.st.GetCredentialsStatus(ctx, req.GetUserId())
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, status.Error(codes.FailedPrecondition, "bmstu: credentials not linked")
+	case err != nil:
+		return nil, status.Errorf(codes.Internal, "get creds status: %v", err)
+	}
+	semesterUUID := s.cfg.SemesterFor(health.DBToProto(creds.HealthGroup))
+	if semesterUUID == "" {
+		return nil, status.Errorf(codes.Internal,
+			"bmstu: no semester UUID for health_group=%s", creds.HealthGroup)
 	}
 
 	hc, err := s.mgr.Acquire(ctx, req.GetUserId())
@@ -206,9 +242,9 @@ func (s *Server) FetchGroups(ctx context.Context, req *bmstuv1.FetchGroupsReques
 		return nil, mapSessionError(err)
 	}
 
-	slots, err := s.groups.Fetch(ctx, hc, s.cfg.SemesterUUID)
+	slots, err := s.groups.Fetch(ctx, hc, semesterUUID)
 	if err == nil {
-		return s.successResponse(slots), nil
+		return s.successResponse(slots, semesterUUID), nil
 	}
 
 	if !errors.Is(err, oidc.ErrSessionExpired) {
@@ -226,19 +262,19 @@ func (s *Server) FetchGroups(ctx context.Context, req *bmstuv1.FetchGroupsReques
 	if err != nil {
 		return nil, mapSessionError(err)
 	}
-	slots, err = s.groups.Fetch(ctx, hc, s.cfg.SemesterUUID)
+	slots, err = s.groups.Fetch(ctx, hc, semesterUUID)
 	if err != nil {
 		return nil, mapOIDCError(err)
 	}
-	return s.successResponse(slots), nil
+	return s.successResponse(slots, semesterUUID), nil
 }
 
 // successResponse собирает FetchGroupsResponse с UTC now() как fetched_at.
-func (s *Server) successResponse(slots []*commonv1.Slot) *bmstuv1.FetchGroupsResponse {
+func (s *Server) successResponse(slots []*commonv1.Slot, semesterUUID string) *bmstuv1.FetchGroupsResponse {
 	return &bmstuv1.FetchGroupsResponse{
 		Slots:        slots,
 		FetchedAt:    timestamppb.New(time.Now().UTC()),
-		SemesterUuid: s.cfg.SemesterUUID,
+		SemesterUuid: semesterUUID,
 	}
 }
 

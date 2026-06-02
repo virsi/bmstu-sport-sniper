@@ -170,6 +170,73 @@ func (AlertChannel) EnumDescriptor() ([]byte, []int) {
 	return file_common_v1_common_proto_rawDescGZIP(), []int{1}
 }
 
+// HealthGroup — группа здоровья студента БМГТУ для занятий физкультурой.
+// От группы зависит UUID семестра в LKS (`SEMESTER_UUID_*` env), т.к. каждая
+// группа учится по своему расписанию.
+//
+// Источник истинности: справка из деканата у самого студента; на сайте LKS
+// группа отражена в личном кабинете, но в API не отдаётся, поэтому юзер
+// выбирает её сам при сохранении BMSTU-кредов.
+type HealthGroup int32
+
+const (
+	// HEALTH_GROUP_UNSPECIFIED — не указана, bmstu-svc подставит дефолт BASIC.
+	HealthGroup_HEALTH_GROUP_UNSPECIFIED HealthGroup = 0
+	// HEALTH_GROUP_BASIC — Основная группа (без ограничений по здоровью).
+	HealthGroup_HEALTH_GROUP_BASIC HealthGroup = 1
+	// HEALTH_GROUP_PREPARATORY — Подготовительная (лёгкие ограничения).
+	HealthGroup_HEALTH_GROUP_PREPARATORY HealthGroup = 2
+	// HEALTH_GROUP_SPECIAL_MEDICAL — Специальная медицинская (СМГ).
+	HealthGroup_HEALTH_GROUP_SPECIAL_MEDICAL HealthGroup = 3
+	// HEALTH_GROUP_AFK — Адаптивная физкультура (АФК).
+	HealthGroup_HEALTH_GROUP_AFK HealthGroup = 4
+)
+
+// Enum value maps for HealthGroup.
+var (
+	HealthGroup_name = map[int32]string{
+		0: "HEALTH_GROUP_UNSPECIFIED",
+		1: "HEALTH_GROUP_BASIC",
+		2: "HEALTH_GROUP_PREPARATORY",
+		3: "HEALTH_GROUP_SPECIAL_MEDICAL",
+		4: "HEALTH_GROUP_AFK",
+	}
+	HealthGroup_value = map[string]int32{
+		"HEALTH_GROUP_UNSPECIFIED":     0,
+		"HEALTH_GROUP_BASIC":           1,
+		"HEALTH_GROUP_PREPARATORY":     2,
+		"HEALTH_GROUP_SPECIAL_MEDICAL": 3,
+		"HEALTH_GROUP_AFK":             4,
+	}
+)
+
+func (x HealthGroup) Enum() *HealthGroup {
+	p := new(HealthGroup)
+	*p = x
+	return p
+}
+
+func (x HealthGroup) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (HealthGroup) Descriptor() protoreflect.EnumDescriptor {
+	return file_common_v1_common_proto_enumTypes[2].Descriptor()
+}
+
+func (HealthGroup) Type() protoreflect.EnumType {
+	return &file_common_v1_common_proto_enumTypes[2]
+}
+
+func (x HealthGroup) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use HealthGroup.Descriptor instead.
+func (HealthGroup) EnumDescriptor() ([]byte, []int) {
+	return file_common_v1_common_proto_rawDescGZIP(), []int{2}
+}
+
 // BmstuLinkStatus — состояние привязки BMSTU кредов у пользователя.
 type BmstuLinkStatus int32
 
@@ -217,11 +284,11 @@ func (x BmstuLinkStatus) String() string {
 }
 
 func (BmstuLinkStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_common_v1_common_proto_enumTypes[2].Descriptor()
+	return file_common_v1_common_proto_enumTypes[3].Descriptor()
 }
 
 func (BmstuLinkStatus) Type() protoreflect.EnumType {
-	return &file_common_v1_common_proto_enumTypes[2]
+	return &file_common_v1_common_proto_enumTypes[3]
 }
 
 func (x BmstuLinkStatus) Number() protoreflect.EnumNumber {
@@ -230,7 +297,7 @@ func (x BmstuLinkStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use BmstuLinkStatus.Descriptor instead.
 func (BmstuLinkStatus) EnumDescriptor() ([]byte, []int) {
-	return file_common_v1_common_proto_rawDescGZIP(), []int{2}
+	return file_common_v1_common_proto_rawDescGZIP(), []int{3}
 }
 
 // User — публичный профиль пользователя сайта.
@@ -869,7 +936,13 @@ const file_common_v1_common_proto_rawDesc = "" +
 	"\x16ALERT_CHANNEL_TELEGRAM\x10\x01\x12\x15\n" +
 	"\x11ALERT_CHANNEL_SSE\x10\x02\x12\x17\n" +
 	"\x13ALERT_CHANNEL_EMAIL\x10\x03\x12\x1a\n" +
-	"\x16ALERT_CHANNEL_WEB_PUSH\x10\x04*\xb1\x01\n" +
+	"\x16ALERT_CHANNEL_WEB_PUSH\x10\x04*\x99\x01\n" +
+	"\vHealthGroup\x12\x1c\n" +
+	"\x18HEALTH_GROUP_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12HEALTH_GROUP_BASIC\x10\x01\x12\x1c\n" +
+	"\x18HEALTH_GROUP_PREPARATORY\x10\x02\x12 \n" +
+	"\x1cHEALTH_GROUP_SPECIAL_MEDICAL\x10\x03\x12\x14\n" +
+	"\x10HEALTH_GROUP_AFK\x10\x04*\xb1\x01\n" +
 	"\x0fBmstuLinkStatus\x12!\n" +
 	"\x1dBMSTU_LINK_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cBMSTU_LINK_STATUS_NOT_LINKED\x10\x01\x12\x1b\n" +
@@ -889,33 +962,34 @@ func file_common_v1_common_proto_rawDescGZIP() []byte {
 	return file_common_v1_common_proto_rawDescData
 }
 
-var file_common_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_common_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_common_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_common_v1_common_proto_goTypes = []any{
 	(DayOfWeek)(0),                // 0: common.v1.DayOfWeek
 	(AlertChannel)(0),             // 1: common.v1.AlertChannel
-	(BmstuLinkStatus)(0),          // 2: common.v1.BmstuLinkStatus
-	(*User)(nil),                  // 3: common.v1.User
-	(*Slot)(nil),                  // 4: common.v1.Slot
-	(*Filter)(nil),                // 5: common.v1.Filter
-	(*MatchedSlot)(nil),           // 6: common.v1.MatchedSlot
-	(*PageRequest)(nil),           // 7: common.v1.PageRequest
-	(*PageResponse)(nil),          // 8: common.v1.PageResponse
-	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
+	(HealthGroup)(0),              // 2: common.v1.HealthGroup
+	(BmstuLinkStatus)(0),          // 3: common.v1.BmstuLinkStatus
+	(*User)(nil),                  // 4: common.v1.User
+	(*Slot)(nil),                  // 5: common.v1.Slot
+	(*Filter)(nil),                // 6: common.v1.Filter
+	(*MatchedSlot)(nil),           // 7: common.v1.MatchedSlot
+	(*PageRequest)(nil),           // 8: common.v1.PageRequest
+	(*PageResponse)(nil),          // 9: common.v1.PageResponse
+	(*timestamppb.Timestamp)(nil), // 10: google.protobuf.Timestamp
 }
 var file_common_v1_common_proto_depIdxs = []int32{
-	9, // 0: common.v1.User.created_at:type_name -> google.protobuf.Timestamp
-	9, // 1: common.v1.User.last_seen_at:type_name -> google.protobuf.Timestamp
-	0, // 2: common.v1.Slot.day_of_week:type_name -> common.v1.DayOfWeek
-	0, // 3: common.v1.Filter.day_of_week:type_name -> common.v1.DayOfWeek
-	9, // 4: common.v1.Filter.created_at:type_name -> google.protobuf.Timestamp
-	9, // 5: common.v1.Filter.updated_at:type_name -> google.protobuf.Timestamp
-	4, // 6: common.v1.MatchedSlot.slot:type_name -> common.v1.Slot
-	7, // [7:7] is the sub-list for method output_type
-	7, // [7:7] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	10, // 0: common.v1.User.created_at:type_name -> google.protobuf.Timestamp
+	10, // 1: common.v1.User.last_seen_at:type_name -> google.protobuf.Timestamp
+	0,  // 2: common.v1.Slot.day_of_week:type_name -> common.v1.DayOfWeek
+	0,  // 3: common.v1.Filter.day_of_week:type_name -> common.v1.DayOfWeek
+	10, // 4: common.v1.Filter.created_at:type_name -> google.protobuf.Timestamp
+	10, // 5: common.v1.Filter.updated_at:type_name -> google.protobuf.Timestamp
+	5,  // 6: common.v1.MatchedSlot.slot:type_name -> common.v1.Slot
+	7,  // [7:7] is the sub-list for method output_type
+	7,  // [7:7] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_common_v1_common_proto_init() }
@@ -932,7 +1006,7 @@ func file_common_v1_common_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_common_v1_common_proto_rawDesc), len(file_common_v1_common_proto_rawDesc)),
-			NumEnums:      3,
+			NumEnums:      4,
 			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,

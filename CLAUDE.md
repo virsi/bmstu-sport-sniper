@@ -52,7 +52,7 @@ pnpm -C apps/web e2e          # Playwright против vite preview (нужен
 
 ### Local dev стек
 ```sh
-cp .env.example .env          # заполнить JWT_SECRET, AES_MASTER_KEY (openssl rand -hex 32), SEMESTER_UUID, TG_BOT_TOKEN
+cp .env.example .env          # заполнить JWT_SECRET, AES_MASTER_KEY (openssl rand -hex 32), SEMESTER_UUID_* (4 шт по группам здоровья), TG_BOT_TOKEN
 docker compose -f backend/deploy/docker-compose.yaml up -d --build
 ```
 

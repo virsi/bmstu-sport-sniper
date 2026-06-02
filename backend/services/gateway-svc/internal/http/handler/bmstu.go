@@ -9,20 +9,34 @@ import (
 	"github.com/fizcultor/backend/services/gateway-svc/internal/http/middleware"
 )
 
+// Допустимые строковые значения health_group в REST-теле POST /api/bmstu/creds.
+// Совпадают с CHECK в migrations/bmstu_db/00003_health_group.sql и с
+// именами без префикса HEALTH_GROUP_* из common.v1.HealthGroup.
+const (
+	healthGroupBasic          = "BASIC"
+	healthGroupPreparatory    = "PREPARATORY"
+	healthGroupSpecialMedical = "SPECIAL_MEDICAL"
+	healthGroupAFK            = "AFK"
+)
+
 // bmstuCredsRequest — тело POST /api/bmstu/creds.
 //
-// ВАЖНО: эти поля логировать НЕЛЬЗЯ — bmstu-svc сам редактирует логи.
-// Gateway не должен класть password в slog.
+// ВАЖНО: login/password логировать НЕЛЬЗЯ — bmstu-svc сам редактирует логи.
+// Gateway не должен класть password в slog. health_group — НЕ секрет, ОК
+// логировать.
 type bmstuCredsRequest struct {
-	Login    string `json:"login"`
-	Password string `json:"password"`
+	Login       string `json:"login"`
+	Password    string `json:"password"`
+	HealthGroup string `json:"health_group"`
 }
 
 // bmstuStatusResponse — ответ GET /api/bmstu/status (api.md §3).
 //
-// Поля LastLoginAt, SessionExpiresAt, LastError опциональны.
+// Поля LastLoginAt, SessionExpiresAt, LastError, HealthGroup опциональны.
+// HealthGroup пуст при status == NOT_LINKED.
 type bmstuStatusResponse struct {
 	Status           string     `json:"status"`
+	HealthGroup      string     `json:"health_group,omitempty"`
 	LastLoginAt      *time.Time `json:"last_login_at,omitempty"`
 	SessionExpiresAt *time.Time `json:"session_expires_at,omitempty"`
 	LastError        string     `json:"last_error,omitempty"`
@@ -48,11 +62,19 @@ func (h *Handler) BmstuStoreCreds(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, NewBadRequest("login and password are required"))
 		return
 	}
+	hg, ok := healthGroupFromString(body.HealthGroup)
+	if !ok {
+		WriteError(w, r, NewBadRequest(
+			"health_group must be one of: BASIC, PREPARATORY, SPECIAL_MEDICAL, AFK",
+		))
+		return
+	}
 
 	if _, err := h.deps.Clients.Bmstu.StoreCredentials(r.Context(), &bmstuv1.StoreCredentialsRequest{
-		UserId:   userID,
-		Login:    body.Login,
-		Password: body.Password,
+		UserId:      userID,
+		Login:       body.Login,
+		Password:    body.Password,
+		HealthGroup: hg,
 	}); err != nil {
 		WriteError(w, r, err)
 		return
@@ -75,8 +97,9 @@ func (h *Handler) BmstuStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := bmstuStatusResponse{
-		Status:    bmstuStatusToString(resp.GetStatus()),
-		LastError: resp.GetLastError(),
+		Status:      bmstuStatusToString(resp.GetStatus()),
+		HealthGroup: healthGroupToString(resp.GetHealthGroup()),
+		LastError:   resp.GetLastError(),
 	}
 	if ts := resp.GetLastLoginAt(); ts != nil {
 		t := ts.AsTime()
@@ -120,5 +143,50 @@ func bmstuStatusToString(s commonv1.BmstuLinkStatus) string {
 		return "EXPIRED"
 	default:
 		return "UNSPECIFIED"
+	}
+}
+
+// healthGroupFromString парсит строку из REST-тела в proto enum.
+//
+// Допустимые значения (case-sensitive, как в DB CHECK):
+//   - "" → UNSPECIFIED (bmstu-svc подставит дефолт BASIC), ok = true.
+//   - "BASIC" / "PREPARATORY" / "SPECIAL_MEDICAL" / "AFK" — соответствующий enum.
+//   - всё остальное → UNSPECIFIED, ok = false (клиент должен получить 400).
+//
+// Пустая строка трактуется как «не указано» намеренно: чтобы не ломать
+// старых клиентов, у которых health_group отсутствует в JSON-теле.
+func healthGroupFromString(s string) (commonv1.HealthGroup, bool) {
+	switch s {
+	case "":
+		return commonv1.HealthGroup_HEALTH_GROUP_UNSPECIFIED, true
+	case healthGroupBasic:
+		return commonv1.HealthGroup_HEALTH_GROUP_BASIC, true
+	case healthGroupPreparatory:
+		return commonv1.HealthGroup_HEALTH_GROUP_PREPARATORY, true
+	case healthGroupSpecialMedical:
+		return commonv1.HealthGroup_HEALTH_GROUP_SPECIAL_MEDICAL, true
+	case healthGroupAFK:
+		return commonv1.HealthGroup_HEALTH_GROUP_AFK, true
+	default:
+		return commonv1.HealthGroup_HEALTH_GROUP_UNSPECIFIED, false
+	}
+}
+
+// healthGroupToString сериализует proto enum в строку для REST-ответа.
+// UNSPECIFIED → "" (поле опускается через omitempty).
+func healthGroupToString(hg commonv1.HealthGroup) string {
+	switch hg {
+	case commonv1.HealthGroup_HEALTH_GROUP_BASIC:
+		return healthGroupBasic
+	case commonv1.HealthGroup_HEALTH_GROUP_PREPARATORY:
+		return healthGroupPreparatory
+	case commonv1.HealthGroup_HEALTH_GROUP_SPECIAL_MEDICAL:
+		return healthGroupSpecialMedical
+	case commonv1.HealthGroup_HEALTH_GROUP_AFK:
+		return healthGroupAFK
+	case commonv1.HealthGroup_HEALTH_GROUP_UNSPECIFIED:
+		return ""
+	default:
+		return ""
 	}
 }

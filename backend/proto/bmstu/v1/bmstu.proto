@@ -49,7 +49,8 @@ service BmstuService {
 }
 
 // StoreCredentialsRequest — креды для сохранения.
-// ВАЖНО: эти поля логировать НЕЛЬЗЯ, в middleware redaction обязателен.
+// ВАЖНО: login/password логировать НЕЛЬЗЯ, в middleware redaction обязателен.
+// health_group — НЕ секрет, спокойно идёт в логи.
 message StoreCredentialsRequest {
   // user_id — владелец, FK на auth_db.users.
   string user_id = 1;
@@ -57,6 +58,10 @@ message StoreCredentialsRequest {
   string login = 2;
   // password — plain text BMSTU-пароль, шифруется на стороне сервера.
   string password = 3;
+  // health_group — группа здоровья студента. Определяет, какой UUID семестра
+  // bmstu-svc подставит в LKS API при FetchGroups. UNSPECIFIED трактуется как
+  // BASIC (см. SemesterUUIDFor в bmstu-svc/internal/config).
+  common.v1.HealthGroup health_group = 4;
 }
 
 // StoreCredentialsResponse — итог сохранения.
@@ -96,6 +101,9 @@ message GetStatusResponse {
   // last_error — человеко-читаемая причина INVALID/EXPIRED (для UI).
   // Не содержит секретов, ОК показывать.
   optional string last_error = 4;
+  // health_group — выбранная юзером группа здоровья (для UI badge).
+  // UNSPECIFIED если креды не сохранены (status == NOT_LINKED).
+  common.v1.HealthGroup health_group = 5;
 }
 
 // FetchGroupsRequest — запрос слотов для пользователя.

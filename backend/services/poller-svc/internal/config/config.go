@@ -24,9 +24,6 @@ type Config struct {
 	// появления filter-svc.ListActiveUsers RPC.
 	UserIDs string `env:"POLL_USER_IDS"`
 
-	// SemesterUUID — для диагностики; bmstu-svc сам читает из env.
-	SemesterUUID string `env:"SEMESTER_UUID"`
-
 	// Адреса gRPC-сервисов (клиенты).
 	BmstuGRPCAddr    string `env:"BMSTU_GRPC_ADDR" envDefault:"bmstu-svc:9090"`
 	FilterGRPCAddr   string `env:"FILTER_GRPC_ADDR" envDefault:"filter-svc:9090"`

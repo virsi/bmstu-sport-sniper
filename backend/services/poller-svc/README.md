@@ -47,7 +47,6 @@
 | `POLL_CONCURRENCY` | `10` | максимум параллельных опросов |
 | `POLL_USER_IDS` | `""` | список user_id'ов через запятую (stub) |
 | `ACTIVE_USER_DAYS` | `7` | (зарезервировано для будущего RPC) |
-| `SEMESTER_UUID` | `""` | (диагностика; bmstu-svc сам читает из env) |
 | `BMSTU_GRPC_ADDR` | `bmstu-svc:9090` | |
 | `FILTER_GRPC_ADDR` | `filter-svc:9090` | |
 | `NOTIFIER_GRPC_ADDR` | `notifier-svc:9090` | |

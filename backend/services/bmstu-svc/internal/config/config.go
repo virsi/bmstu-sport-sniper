@@ -3,7 +3,11 @@ package config
 
 import (
 	"errors"
+	"fmt"
 
+	"github.com/google/uuid"
+
+	commonv1 "github.com/fizcultor/backend/gen/common/v1"
 	basecfg "github.com/fizcultor/backend/pkg/config"
 	"github.com/fizcultor/backend/pkg/crypto"
 )
@@ -16,8 +20,16 @@ type Config struct {
 	// BMSTU-кредов и cookie-jar at-rest.
 	AESMasterKeyHex string `env:"AES_MASTER_KEY,required"`
 
-	// SemesterUUID — UUID семестра, подставляется в LKS API URL.
-	SemesterUUID string `env:"SEMESTER_UUID,required"`
+	// SemesterUUIDBasic — UUID семестра LKS для основной группы здоровья.
+	// Подставляется в `/lks-back/api/v1/fv/{uuid}/groups` при FetchGroups.
+	SemesterUUIDBasic string `env:"SEMESTER_UUID_BASIC,required"`
+	// SemesterUUIDPreparatory — UUID семестра LKS для подготовительной группы.
+	SemesterUUIDPreparatory string `env:"SEMESTER_UUID_PREPARATORY,required"`
+	// SemesterUUIDSpecialMedical — UUID семестра LKS для специальной
+	// медицинской группы (СМГ).
+	SemesterUUIDSpecialMedical string `env:"SEMESTER_UUID_SPECIAL_MEDICAL,required"`
+	// SemesterUUIDAFK — UUID семестра LKS для адаптивной физкультуры (АФК).
+	SemesterUUIDAFK string `env:"SEMESTER_UUID_AFK,required"`
 
 	// LKSBaseURL — базовый URL LKS BMSTU.
 	LKSBaseURL string `env:"LKS_BASE_URL" envDefault:"https://lks.bmstu.ru"`
@@ -55,5 +67,41 @@ func (c *Config) Validate() error {
 	if _, err := crypto.KeyFromHex(c.AESMasterKeyHex); err != nil {
 		return err
 	}
+	checks := []struct {
+		name string
+		val  string
+	}{
+		{"SEMESTER_UUID_BASIC", c.SemesterUUIDBasic},
+		{"SEMESTER_UUID_PREPARATORY", c.SemesterUUIDPreparatory},
+		{"SEMESTER_UUID_SPECIAL_MEDICAL", c.SemesterUUIDSpecialMedical},
+		{"SEMESTER_UUID_AFK", c.SemesterUUIDAFK},
+	}
+	for _, ch := range checks {
+		if _, err := uuid.Parse(ch.val); err != nil {
+			return fmt.Errorf("config: %s is not a valid UUID: %w", ch.name, err)
+		}
+	}
 	return nil
+}
+
+// SemesterUUIDFor возвращает UUID семестра LKS для указанной группы здоровья.
+//
+// UNSPECIFIED трактуется как BASIC (бэкворд-совместимость + дефолт схемы БД).
+// Неизвестные значения — тоже BASIC, чтобы FetchGroups не падал при чтении
+// исторических/повреждённых записей; на запись же бэкэнд всегда нормализует
+// через health.ProtoToDB.
+func (c *Config) SemesterUUIDFor(hg commonv1.HealthGroup) string {
+	switch hg {
+	case commonv1.HealthGroup_HEALTH_GROUP_PREPARATORY:
+		return c.SemesterUUIDPreparatory
+	case commonv1.HealthGroup_HEALTH_GROUP_SPECIAL_MEDICAL:
+		return c.SemesterUUIDSpecialMedical
+	case commonv1.HealthGroup_HEALTH_GROUP_AFK:
+		return c.SemesterUUIDAFK
+	case commonv1.HealthGroup_HEALTH_GROUP_BASIC,
+		commonv1.HealthGroup_HEALTH_GROUP_UNSPECIFIED:
+		return c.SemesterUUIDBasic
+	default:
+		return c.SemesterUUIDBasic
+	}
 }

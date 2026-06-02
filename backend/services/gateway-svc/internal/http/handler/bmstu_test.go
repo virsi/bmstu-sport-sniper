@@ -30,16 +30,33 @@ func TestHandler_BmstuStoreCreds(t *testing.T) {
 
 	cases := []tc{
 		{
-			name: "happy → 204",
-			body: `{"login":"ivanov_ii","password":"secret"}`,
+			name: "happy → 204 (with health_group)",
+			body: `{"login":"ivanov_ii","password":"secret","health_group":"PREPARATORY"}`,
 			mockFn: func(_ context.Context, in *bmstuv1.StoreCredentialsRequest) (*bmstuv1.StoreCredentialsResponse, error) {
 				assert.Equal(t, "u-1", in.GetUserId())
 				assert.Equal(t, "ivanov_ii", in.GetLogin())
+				assert.Equal(t, commonv1.HealthGroup_HEALTH_GROUP_PREPARATORY, in.GetHealthGroup())
 				return &bmstuv1.StoreCredentialsResponse{
 					Status: commonv1.BmstuLinkStatus_BMSTU_LINK_STATUS_VALID,
 				}, nil
 			},
 			wantStatus: http.StatusNoContent,
+		},
+		{
+			name: "happy → 204 (empty health_group → UNSPECIFIED, bmstu-svc дефолтит на BASIC)",
+			body: `{"login":"ivanov_ii","password":"secret"}`,
+			mockFn: func(_ context.Context, in *bmstuv1.StoreCredentialsRequest) (*bmstuv1.StoreCredentialsResponse, error) {
+				assert.Equal(t, commonv1.HealthGroup_HEALTH_GROUP_UNSPECIFIED, in.GetHealthGroup())
+				return &bmstuv1.StoreCredentialsResponse{
+					Status: commonv1.BmstuLinkStatus_BMSTU_LINK_STATUS_VALID,
+				}, nil
+			},
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name:       "invalid health_group → 400",
+			body:       `{"login":"x","password":"y","health_group":"OLYMPIC"}`,
+			wantStatus: http.StatusBadRequest,
 		},
 		{
 			name:       "missing login → 400",
@@ -102,6 +119,7 @@ func TestHandler_BmstuStatus(t *testing.T) {
 				Status:      commonv1.BmstuLinkStatus_BMSTU_LINK_STATUS_INVALID,
 				LastLoginAt: timestamppb.New(fixedTime),
 				LastError:   &lastErr,
+				HealthGroup: commonv1.HealthGroup_HEALTH_GROUP_SPECIAL_MEDICAL,
 			}, nil
 		},
 	}
@@ -119,6 +137,7 @@ func TestHandler_BmstuStatus(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 	assert.Equal(t, "INVALID", body["status"])
 	assert.Equal(t, "Keycloak returned 401", body["last_error"])
+	assert.Equal(t, "SPECIAL_MEDICAL", body["health_group"])
 	assert.Contains(t, body, "last_login_at")
 }
 

@@ -66,7 +66,8 @@ fizcultor-bot/
 ```sh
 cp .env.example .env
 # отредактируй .env:
-#   JWT_SECRET, AES_MASTER_KEY (openssl rand -hex 32), SEMESTER_UUID, TG_BOT_TOKEN
+#   JWT_SECRET, AES_MASTER_KEY (openssl rand -hex 32),
+#   SEMESTER_UUID_BASIC / _PREPARATORY / _SPECIAL_MEDICAL / _AFK, TG_BOT_TOKEN
 
 # Одна команда — старт всей инфры (Postgres + NATS + Caddy + 7 svc):
 docker compose -f backend/deploy/docker-compose.yaml up -d --build
