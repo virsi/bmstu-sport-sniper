@@ -1,22 +1,24 @@
 # Prometheus scrape-config для fizcultor-bot production.
 #
-# Все 7 Go-сервисов экспонируют /metrics на HTTP-порту 8080 (тот же, что и
-# /healthz, /readyz). Префикс метрик: <svc>_ (auth_*, bmstu_* и т.д.).
+# Цель: собрать four-pillar метрики —
+#   - Application:   gRPC, HTTP, custom counters (Go-сервисы /metrics).
+#   - System host:   CPU, RAM, disk, network, load (node-exporter).
+#   - Containers:    per-container CPU/RAM/disk/IO (cAdvisor).
+#   - Infra:         Postgres (postgres-exporter), NATS (nats-exporter).
 #
 # scrape_interval 15s — стандартный compromise: latency-чувствительные метрики
 # обновляются ~раз в pause; CPU/heap графики плавные.
 #
 # Reload без перезапуска: docker exec prometheus kill -HUP 1
-# Или: curl -X POST http://prometheus:9090/-/reload (если включено
-# --web.enable-lifecycle в compose, что мы и сделали).
+# Или: curl -X POST http://prometheus:9090/-/reload (--web.enable-lifecycle).
 
 global:
   scrape_interval: 15s
   scrape_timeout: 10s
   evaluation_interval: 30s
 
-  # External labels — добавляются ко всем сериям (полезно если в будущем
-  # будем агрегировать несколько окружений в один Prometheus).
+  # External labels — добавляются ко всем сериям (полезно при агрегации
+  # нескольких окружений в один Prometheus).
   external_labels:
     project: fizcultor
     environment: prod
@@ -31,13 +33,16 @@ global:
 #   - /etc/prometheus/rules/*.yml
 
 scrape_configs:
-  # Самосбор — useful sanity-check, что Prometheus работает.
+  # ---------- 1. Self-scrape ----------
+  # sanity-check, что Prometheus вообще работает; используется в healthz.
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
 
-  # Все Go-сервисы. Используется static_configs, потому что в compose-сети
-  # имена хостов стабильны. Для k8s/swarm заменить на kubernetes_sd_configs.
+  # ---------- 2. Application services (7 Go-сервисов) ----------
+  # /metrics на :8080 (тот же порт, что /healthz/readyz). Префикс метрик
+  # <svc>_ задаётся в pkg/metrics.Init() — relabel не нужен для имён,
+  # только для label service=<auth|bmstu|...>.
   - job_name: fizcultor-services
     metrics_path: /metrics
     static_configs:
@@ -49,36 +54,67 @@ scrape_configs:
           - notifier-svc:8080
           - poller-svc:8080
           - gateway-svc:8080
-    # Relabel — добавляем красивый label "service" вместо instance.
-    # Облегчает Grafana-templating: {{ service }} вместо разбора instance.
     relabel_configs:
+      # service = "auth-svc" (полное имя контейнера).
       - source_labels: [__address__]
         regex: '([^:]+):.*'
         target_label: service
         replacement: '${1}'
+      # short_name = "auth" (без -svc) — удобно для dashboard variables.
       - source_labels: [__address__]
         regex: '([^-]+)-svc:.*'
         target_label: short_name
         replacement: '${1}'
 
+  # ---------- 3. Host system metrics ----------
+  # node-exporter работает в host PID/NET namespace, поэтому видит реальные
+  # CPU/RAM/disk хоста, не контейнера. nodename label задаём вручную для
+  # multi-host deployments (сейчас single-host, но не помешает).
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          nodename: primary
+
+  # ---------- 4. Container metrics (cAdvisor) ----------
+  # cAdvisor сам нормализует label `name` = имя docker-контейнера (например
+  # `fizcultor-prod-auth-svc-1`). Дополнительно мы экстрагируем `service`
+  # из `container_label_com_docker_compose_service` (compose label).
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+    metric_relabel_configs:
+      # service label из compose-метки — позволяет джоинить с
+      # fizcultor-services по тому же значению.
+      - source_labels: [container_label_com_docker_compose_service]
+        regex: '(.+)'
+        target_label: service
+        replacement: '${1}'
+      # Отбрасываем шумные метрики `id`/`name` которые сильно cardinality
+      # blow up: оставляем только нужные для дашбордов.
+      - source_labels: [__name__]
+        regex: 'container_(cpu_usage_seconds_total|memory_usage_bytes|memory_working_set_bytes|memory_rss|fs_reads_bytes_total|fs_writes_bytes_total|network_receive_bytes_total|network_transmit_bytes_total|last_seen|spec_memory_limit_bytes|spec_cpu_quota|spec_cpu_period|tasks_state|start_time_seconds)'
+        action: keep
+
+  # ---------- 5. Postgres ----------
+  # postgres-exporter с auto-discover читает pg_stat_database для всех 4-х
+  # наших БД (auth_db, bmstu_db, filter_db, teachers_db) автоматически.
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  # ---------- 6. NATS ----------
+  # nats-exporter перепаковывает /varz, /jsz, /connz из nats:8222 в
+  # prometheus формат. Метрики: gnatsd_varz_*, gnatsd_jsz_*, gnatsd_connz_*.
+  - job_name: nats
+    static_configs:
+      - targets: ["nats-exporter:7777"]
+
+  # ---------- 7. Caddy (опц.) ----------
   # Caddy admin-API не экспонит /metrics по умолчанию; включается через
-  # `servers { metrics }` в Caddyfile (мы пока не включали — добавь когда
-  # понадобится request-rate на edge). Стуб job на будущее:
+  # `servers { metrics }` в Caddyfile (пока не включили — добавь когда
+  # нужен request-rate на edge). Стуб job:
   # - job_name: caddy
   #   metrics_path: /metrics
   #   static_configs:
   #     - targets: ["caddy:2019"]
-
-  # Postgres exporter — отдельный sidecar; добавь, если нужны метрики БД
-  # (connections, locks, slow queries). См. observability.md.
-  # - job_name: postgres
-  #   static_configs:
-  #     - targets: ["postgres-exporter:9187"]
-
-  # NATS exposes /varz, /jsz, /connz через HTTP-monitor на 8222.
-  # Prometheus может использовать NATS Surveyor либо
-  # `nats-exporter`. Стуб:
-  # - job_name: nats
-  #   metrics_path: /metrics
-  #   static_configs:
-  #     - targets: ["nats-exporter:7777"]

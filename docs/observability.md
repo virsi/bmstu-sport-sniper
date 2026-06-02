@@ -1,32 +1,43 @@
 # Observability — fizcultor-bot
 
-Production-стэк: **Prometheus** (метрики) + **Grafana** (дашборды) + **slog JSON** в stdout (логи). Tracing (Jaeger/Tempo) пока не подключено — V2.
+Production-стэк: **Prometheus** (метрики) + **Grafana** (дашборды) + **slog JSON** в stdout (логи) + **4 экспортёра** для системного слоя. Tracing (Jaeger/Tempo) пока не подключено — V2.
 
 ## Стэк
 
 ```
               ┌───────────────────────────────────┐
               │  https://<DOMAIN>/grafana/        │
-              │  Grafana UI (только админ)        │
+              │  Grafana UI (только админ, 5 dash)│
               └───────────────┬───────────────────┘
                               │ datasource
                               ▼
               ┌───────────────────────────────────┐
               │  Prometheus :9090                 │
-              │  scrape 15s, retention 30d        │
+              │  scrape 15s, retention 30d (prod) │
               └───────────────┬───────────────────┘
                               │ /metrics
-            ┌─────────────────┼─────────────────┐
-            ▼                 ▼                 ▼
-   ┌────────────────┐ ┌────────────────┐ ┌────────────────┐
-   │  auth-svc      │ │  bmstu-svc     │ │  gateway-svc   │
-   │  :8080/metrics │ │  :8080/metrics │ │  :8080/metrics │
-   └────────────────┘ └────────────────┘ └────────────────┘
-   (+ filter-svc, teachers-svc, notifier-svc, poller-svc)
+   ┌──────────┬───────────────┼─────────────────┬──────────────┐
+   ▼          ▼               ▼                 ▼              ▼
+┌──────┐ ┌─────────┐ ┌──────────────┐ ┌────────────────┐ ┌──────────┐
+│ Go   │ │ node-   │ │   cAdvisor   │ │ postgres-      │ │  nats-   │
+│ svc  │ │ exporter│ │   :8080      │ │ exporter :9187 │ │ exporter │
+│ ×7   │ │  :9100  │ │ (containers) │ │  (4 БД)        │ │  :7777   │
+└──────┘ └─────────┘ └──────────────┘ └────────────────┘ └──────────┘
+  app       host         containers          postgres        nats
 ```
 
 Логи: `docker logs <svc>` → stdout (JSON в prod) → можно собирать через
 Loki / Promtail (V2).
+
+## Что собираем (four-pillar)
+
+| Слой | Источник | Что |
+|---|---|---|
+| **Application** | 7 Go-сервисов `/metrics` | gRPC RPS/latency/errors, HTTP, custom counters (auth/bmstu/poller/notifier), Go runtime (goroutines, heap, GC) |
+| **Container** | cAdvisor | per-container CPU/RAM/disk-I/O/network + memory-limit utilization + CPU throttling |
+| **Host** | node-exporter | CPU per mode, RAM/swap, disk usage / IOPS / latency, network bytes/errors, load average, FDs |
+| **Postgres** | postgres-exporter | connections by state, txn commit/rollback rate, tuples, DB size, cache hit ratio, deadlocks, locks |
+| **NATS** | nats-exporter | in/out msgs/bytes, connections, slow consumers, JetStream stream/consumer pending+redelivered |
 
 ## Метрики
 
@@ -160,13 +171,72 @@ Provisioned автоматически из `backend/deploy/grafana/dashboards/`
 | UID | Имя | Что показывает |
 |---|---|---|
 | `fizcultor-overview` | fizcultor — overview | Per-svc request rate, latency p95/p99, error rate, BMSTU auth, poller cycles, Go runtime |
+| `fizcultor-system` | fizcultor — system (host) | CPU usage by mode, load avg, RAM/swap, disk usage/IOPS/latency, network bytes/errors, FDs, ctx switches |
+| `fizcultor-containers` | fizcultor — containers (cAdvisor) | Per-container CPU (с throttling), memory + limit %, disk I/O, network, top-10 CPU/RAM consumers |
+| `fizcultor-postgres` | fizcultor — postgres | Connections by state, txn commit/rollback, tuple ops, DB size, cache hit %, deadlocks, locks |
+| `fizcultor-nats` | fizcultor — NATS | Msg/bytes throughput, connections, slow consumers, JetStream stream/consumer pending + redelivered |
+| `fizcultor-business` | fizcultor — business KPI | Registrations, logins, BMSTU links, alerts sent, SSE conns, poller cycle p50/p95/p99 |
 
 Свои дашборды можно создавать в Grafana UI и экспортировать в JSON, затем коммитить в `dashboards/`.
 
 URL pattern (если Caddyfile проксирует Grafana):
 ```
-https://<DOMAIN>/grafana/d/fizcultor-overview/fizcultor-overview
+https://<DOMAIN>/grafana/d/<uid>/<title-slug>
 ```
+
+## Локальный запуск (dev)
+
+```sh
+cp .env.example .env
+docker compose -f backend/deploy/docker-compose.yaml up -d --build
+```
+
+> ⚠ **macOS Docker Desktop**: cAdvisor ограниченно работает — cgroups
+> контейнеров скрыты Linux VM Docker Desktop, поэтому per-container CPU/RAM/IO
+> метрики могут быть пустыми. Хост-метрики (node-exporter) тоже отражают VM,
+> не сам Mac. На Linux хосте (prod) обе работают полностью. Workaround для
+> локального dev на macOS: запускать стек на Colima (`colima start
+> --vm-type=vz --mount-type=virtiofs`) или Lima — там cgroups видны.
+
+Затем:
+
+| URL | Что |
+|---|---|
+| `http://localhost:3000` | Grafana (admin / admin) |
+| `http://localhost:9090` | Prometheus UI (`Status → Targets` — должно быть 6 UP: prometheus, fizcultor-services, node, cadvisor, postgres, nats) |
+| `http://localhost:9100/metrics` | node-exporter raw |
+| `http://localhost:8081/metrics` | cAdvisor raw |
+| `http://localhost:9187/metrics` | postgres-exporter raw |
+| `http://localhost:7777/metrics` | nats-exporter raw |
+
+В Grafana все 6 дашбордов авто-провижены (`Dashboards → Browse`).
+
+## Постгрес: read-only мониторинг-юзер (prod)
+
+В dev exporter ходит под главным `POSTGRES_USER`. В prod рекомендуется
+выделенный read-only юзер:
+
+```sql
+-- run as superuser в каждой из БД (auth_db, bmstu_db, filter_db, teachers_db)
+CREATE USER pg_monitor WITH PASSWORD '<strong-random>';
+GRANT pg_monitor TO ${POSTGRES_USER};   -- inherit pg_stat_statements
+GRANT CONNECT ON DATABASE <db> TO pg_monitor;
+GRANT SELECT ON pg_stat_database, pg_stat_activity, pg_stat_user_tables,
+                pg_locks, pg_settings TO pg_monitor;
+```
+
+После этого `DATA_SOURCE_NAME` в `docker-compose.prod.yaml` указывает
+`user=pg_monitor` вместо приложенческого юзера. См. также роль
+`pg_monitor` (Postgres 10+) — даёт минимальный набор без ручных GRANT'ов.
+
+## NATS: что значат gnatsd_ метрики
+
+| Метрика | Где смотреть |
+|---|---|
+| `gnatsd_varz_slow_consumers` | НЕ-нулевое значение = клиент не успевает потреблять. SSE-юзеры с медленным интернетом, или perl-consumer завис. |
+| `gnatsd_jsz_consumer_num_redelivered` | NACK loop — алёрт TG/SSE падает у конкретного юзера; проверь `notifier-svc` логи. |
+| `gnatsd_jsz_consumer_num_ack_pending` | Сколько сообщений в очереди ждут ACK. Растёт → потребитель медленный или дохлый. |
+| `gnatsd_varz_in_msgs` / `out_msgs` | Должны быть примерно равны (publish → subscribe fan-out × N). |
 
 ## Tracing (V2)
 

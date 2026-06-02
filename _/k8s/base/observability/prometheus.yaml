@@ -1,0 +1,146 @@
+# Prometheus в k8s: StatefulSet + PVC + scrape config через ConfigMap.
+# Scrape конфиг частично отличается от docker-compose: targets — k8s svc DNS,
+# нет fizcultor-services jobs static target-form, добавлен kubernetes_sd для
+# подов.
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: fizcultor
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      scrape_timeout: 10s
+      evaluation_interval: 30s
+      external_labels:
+        project: fizcultor
+        environment: prod
+        cluster: twc-brainy-crane
+
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: [localhost:9090]
+
+      # 7 Go-сервисов: по statie DNS, чтобы не зависеть от RBAC sd.
+      - job_name: fizcultor-services
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - auth-svc.fizcultor.svc:8080
+              - bmstu-svc.fizcultor.svc:8080
+              - filter-svc.fizcultor.svc:8080
+              - teachers-svc.fizcultor.svc:8080
+              - notifier-svc.fizcultor.svc:8080
+              - poller-svc.fizcultor.svc:8080
+              - gateway-svc.fizcultor.svc:8080
+        relabel_configs:
+          - source_labels: [__address__]
+            regex: '([^.]+)\..*'
+            target_label: service
+            replacement: '${1}'
+          - source_labels: [__address__]
+            regex: '([^-]+)-svc\..*'
+            target_label: short_name
+            replacement: '${1}'
+
+      # node-exporter — DaemonSet, один pod на ноде.
+      - job_name: node
+        static_configs:
+          - targets: [node-exporter.fizcultor.svc:9100]
+            labels:
+              nodename: worker-192.168.0.7
+
+      - job_name: cadvisor
+        static_configs:
+          - targets: [cadvisor.fizcultor.svc:8080]
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: 'container_(cpu_usage_seconds_total|memory_usage_bytes|memory_working_set_bytes|memory_rss|fs_reads_bytes_total|fs_writes_bytes_total|network_receive_bytes_total|network_transmit_bytes_total|last_seen|spec_memory_limit_bytes|spec_cpu_quota|spec_cpu_period|tasks_state|start_time_seconds)'
+            action: keep
+
+      - job_name: postgres
+        static_configs:
+          - targets: [postgres-exporter.fizcultor.svc:9187]
+
+      - job_name: nats
+        static_configs:
+          - targets: [nats-exporter.fizcultor.svc:7777]
+
+      # Traefik (наш) — :9100 metrics entrypoint.
+      - job_name: traefik
+        static_configs:
+          - targets: [traefik.fizcultor.svc:9100]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: fizcultor
+spec:
+  selector: {app: prometheus}
+  ports:
+    - {name: http, port: 9090, targetPort: 9090}
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prometheus
+  namespace: fizcultor
+spec:
+  serviceName: prometheus
+  replicas: 1
+  selector: {matchLabels: {app: prometheus}}
+  template:
+    metadata:
+      labels: {app: prometheus}
+    spec:
+      securityContext:
+        fsGroup: 65534
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.55.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=30d
+            - --web.enable-lifecycle
+          ports:
+            - {name: http, containerPort: 9090}
+          readinessProbe:
+            httpGet: {path: /-/ready, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /-/healthy, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus}
+            - {name: data, mountPath: /prometheus}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits:   {cpu: 1, memory: 1Gi}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+      volumes:
+        - name: config
+          configMap: {name: prometheus-config}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 10Gi

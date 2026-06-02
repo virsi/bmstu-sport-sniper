@@ -1,0 +1,201 @@
+# Свой Traefik для namespace fizcultor.
+#
+# Почему не reuse infra/infra-traefik:
+#   - shared cluster, infra namespace принадлежит другому проекту (tutor).
+#   - email для letsencrypt у них admin@tutor.14dev.ru — не наш.
+#   - LoadBalancer-патч повлиял бы на их инфраструктуру (cost, доступность).
+#
+# Что внутри:
+#   - ServiceAccount + RBAC для watch Ingress* CRDs cluster-wide.
+#   - Deployment с emptyDir для acme.json (на single-node prod вышло бы
+#     PVC + 1 replica; для V1 можно потерять cert при рестарте — Let's
+#     Encrypt сам перевыпустит в течение 60s).
+#   - Service type=LoadBalancer — TWC выдаёт public IP.
+#   - IngressClass `fizcultor-traefik` (свой, чтобы не конфликтовать с
+#     инфровым `traefik` IngressClass).
+#
+# CRDs (ingressroutes.traefik.io и т.д.) уже установлены в кластере
+# (shared) — переиспользуем.
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik
+  namespace: fizcultor
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fizcultor-traefik
+rules:
+  - apiGroups: [""]
+    resources: [services, endpoints, secrets]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - apiGroups: [extensions, networking.k8s.io]
+    resources: [ingresses, ingressclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [extensions, networking.k8s.io]
+    resources: [ingresses/status]
+    verbs: [update]
+  - apiGroups: [traefik.io]
+    resources:
+      - ingressroutes
+      - ingressroutetcps
+      - ingressrouteudps
+      - middlewares
+      - middlewaretcps
+      - tlsoptions
+      - tlsstores
+      - traefikservices
+      - serverstransports
+      - serverstransporttcps
+    verbs: [get, list, watch]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fizcultor-traefik
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fizcultor-traefik
+subjects:
+  - kind: ServiceAccount
+    name: traefik
+    namespace: fizcultor
+
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: fizcultor-traefik
+spec:
+  controller: traefik.io/ingress-controller
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik
+  namespace: fizcultor
+  labels:
+    app: traefik
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: traefik
+  strategy:
+    type: Recreate # acme.json в emptyDir — нельзя 2 копии параллельно
+  template:
+    metadata:
+      labels:
+        app: traefik
+    spec:
+      serviceAccountName: traefik
+      containers:
+        - name: traefik
+          # v3.0.2 уже закэширован на ноде (используется infra-traefik), что
+          # обходит проблему DNS-resolution registry-1.docker.io в этом
+          # кластере. IfNotPresent гарантирует pull только при отсутствии.
+          image: docker.io/traefik:v3.0.2
+          imagePullPolicy: IfNotPresent
+          args:
+            # Базовые entrypoints
+            - --entryPoints.web.address=:8000/tcp
+            - --entryPoints.websecure.address=:8443/tcp
+            # HTTP → HTTPS redirect (KISS)
+            - --entryPoints.web.http.redirections.entryPoint.to=:443
+            - --entryPoints.web.http.redirections.entryPoint.scheme=https
+            - --entryPoints.websecure.http.tls=true
+            # Kubernetes provider: только наш namespace fizcultor (чтобы не
+            # пересекаться с tutor's IngressRoute в других ns, которые
+            # тоже могут быть picked up cluster-wide watch).
+            - --providers.kubernetescrd
+            - --providers.kubernetescrd.namespaces=fizcultor
+            - --providers.kubernetescrd.ingressclass=fizcultor-traefik
+            # Let's Encrypt resolver — TLS-ALPN challenge на :443
+            - --certificatesresolvers.letsencrypt.acme.email=egrvrb@gmail.com
+            - --certificatesresolvers.letsencrypt.acme.storage=/data/acme.json
+            - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+            # На время отладки можно временно включить staging server LE
+            # (без rate-limit): --certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory
+            # Observability
+            - --metrics.prometheus=true
+            - --metrics.prometheus.entrypoint=metrics
+            - --entryPoints.metrics.address=:9100/tcp
+            - --ping=true
+            - --api.dashboard=false
+            - --log.level=INFO
+            - --accesslog=true
+          ports:
+            - name: web
+              containerPort: 8000
+              protocol: TCP
+            - name: websecure
+              containerPort: 8443
+              protocol: TCP
+            - name: metrics
+              containerPort: 9100
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: acme
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            capabilities:
+              drop: [ALL]
+              # binding :443/:80 не нужны — мы слушаем 8000/8443 (svc
+              # маппит 80→8000, 443→8443).
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+      volumes:
+        - name: acme
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik
+  namespace: fizcultor
+  labels:
+    app: traefik
+spec:
+  type: LoadBalancer # TWC выделит public IP
+  selector:
+    app: traefik
+  ports:
+    - name: web
+      port: 80
+      targetPort: web
+      protocol: TCP
+    - name: websecure
+      port: 443
+      targetPort: websecure
+      protocol: TCP

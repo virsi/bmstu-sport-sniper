@@ -1,0 +1,58 @@
+# poller-svc — ticker оркестратор bmstu→filter→notifier. БД нет.
+# gRPC-сервер не нужен (только клиент), но HTTP :8080 для /healthz/metrics.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: poller-svc
+  namespace: fizcultor
+spec:
+  selector: {app: poller-svc}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poller-svc
+  namespace: fizcultor
+  labels: {app: poller-svc}
+spec:
+  # Один тикер — иначе LKS получит N×запросов параллельно. Если выйти
+  # на kubernetes leader-election — можно масштабировать (V2).
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: poller-svc}}
+  template:
+    metadata:
+      labels: {app: poller-svc}
+    spec:
+      containers:
+        - name: poller-svc
+          image: ghcr.io/virsi/fizcultor-bot/poller-svc:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: SERVICE_NAME, value: poller-svc}
+          envFrom:
+            - configMapRef: {name: fizcultor-config}
+            - secretRef: {name: fizcultor-secrets}
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits:   {cpu: 200m, memory: 128Mi}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true

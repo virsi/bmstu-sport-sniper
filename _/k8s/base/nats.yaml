@@ -1,0 +1,79 @@
+# NATS 2.x с JetStream (file storage) — StatefulSet 1 replica, PVC 5Gi.
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  namespace: fizcultor
+  labels:
+    app: nats
+spec:
+  clusterIP: None
+  selector:
+    app: nats
+  ports:
+    - name: client
+      port: 4222
+    - name: monitor
+      port: 8222
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+  namespace: fizcultor
+spec:
+  serviceName: nats
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nats
+  template:
+    metadata:
+      labels:
+        app: nats
+    spec:
+      containers:
+        - name: nats
+          image: docker.io/nats:2-alpine
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-js"
+            - "-sd"
+            - "/data/jetstream"
+            - "-m"
+            - "8222"
+          ports:
+            - name: client
+              containerPort: 4222
+            - name: monitor
+              containerPort: 8222
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits:   {cpu: 500m, memory: 512Mi}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi

@@ -101,6 +101,9 @@ services:
     restart: unless-stopped
     # -js включает JetStream, -sd /data/jetstream — file storage для durable
     # subjects (например, alerts.<user_id> с replay). -m 8222 — monitoring.
+    # /metrics-эндпоинт включается отдельным sidecar nats-exporter (см. ниже):
+    # сам сервер NATS отдаёт только JSON через :8222/varz, prometheus формат
+    # перепаковывает natsio/prometheus-nats-exporter.
     command: ["-js", "-sd", "/data/jetstream", "-m", "8222"]
     volumes:
       - nats-data:/data
@@ -334,6 +337,147 @@ services:
           memory: 64M
 
   # ============== Observability ==============
+  #
+  # Стек: prometheus + grafana + 4 экспортёра (node, cadvisor, postgres, nats).
+  # Каждый экспонит /metrics в bridge-сети; снаружи доступа НЕТ — всё проходит
+  # через prometheus → grafana → Caddy. См. docs/observability.md.
+
+  # node-exporter — host-level метрики (CPU, RAM, disk, network, load).
+  # Требует доступа к хост-namespace (PID/NET/IPC), что в prod необходимо
+  # для получения корректных значений процессов и сетевых счётчиков.
+  # cap_add SYS_TIME не нужен (только для time-collector).
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    pid: host
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      # mountstats требует доступа к /host/root; ограничиваем сбор только
+      # реальными FS — psutil / overlay / tmpfs шумят.
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+      - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro,rslave
+    expose:
+      - "9100"
+    networks:
+      - fizcultor-net
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 32M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # cAdvisor — per-container CPU/RAM/disk-I/O/network метрики.
+  # privileged + Docker socket — единственный способ заглянуть в cgroups
+  # всех контейнеров. На macOS docker socket недоступен в стандартном
+  # Docker Desktop runtime — для локального dev используется linux only.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    privileged: true
+    command:
+      - --housekeeping_interval=15s
+      - --docker_only=true
+      # Отключаем sysfs/diskio коллекторы которые шумят на не-Linux хостах.
+      - --disable_metrics=disk,udp,sched,process,hugetlb,tcp,advtcp,referenced_memory,cpu_topology,resctrl
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    expose:
+      - "8080"
+    networks:
+      - fizcultor-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # postgres-exporter — pg_stat_statements + connections + locks + db-size.
+  # DSN указывает на postgres-сервис; для prod рекомендуется отдельный read-only
+  # юзер с GRANT SELECT ON pg_stat_*, см. observability.md → "Postgres metrics".
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    restart: unless-stopped
+    environment:
+      # DATA_SOURCE_NAME — keyword=value form, иначе url.Parse не съест
+      # пароли со спецсимволами. sslmode=disable — компоуз-сеть.
+      DATA_SOURCE_NAME: "host=postgres port=5432 user=${POSTGRES_USER:-fizcultor} password=${POSTGRES_PASSWORD} dbname=postgres sslmode=disable"
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
+      PG_EXPORTER_EXCLUDE_DATABASES: "template0,template1"
+    expose:
+      - "9187"
+    networks:
+      - fizcultor-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 32M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # nats-exporter — забирает /varz, /jsz, /connz из nats:8222 и публикует
+  # в Prometheus формате. Запускается рядом, чтобы не модифицировать
+  # NATS-сервер: один экспортёр обслуживает оба endpoints.
+  nats-exporter:
+    image: natsio/prometheus-nats-exporter:0.15.0
+    restart: unless-stopped
+    command:
+      - -varz
+      - -jsz=all
+      - -connz
+      - -subz
+      - -channelz
+      - -port=7777
+      - http://nats:8222
+    expose:
+      - "7777"
+    networks:
+      - fizcultor-net
+    depends_on:
+      nats:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+        reservations:
+          memory: 16M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
 
   prometheus:
     image: prom/prometheus:v2.55.1

@@ -1,0 +1,63 @@
+# Goose migrations: применяет SQL из backend/migrations/<db>/ ко всем
+# 4 БД. ConfigMap содержит миграции (генерация в CI или kubectl create cm
+# --from-file локально перед apply, см. README.md).
+#
+# Запускается KAK Job (не initContainer), потому что:
+#  - один раз на релиз, не на каждый pod-старт
+#  - сервисы могут перезапускаться, тогда migrate перезапустится вхолостую
+#    (goose идемпотентен по version_id, но zero-cost не free)
+#
+# Этот Job ссылается на ConfigMap `migrations-sql` который собирается из
+# backend/migrations/*. Команда сборки (см. Makefile target):
+#   make k8s-migrations-cm | kubectl apply -f -
+#
+# Использует image migrate/migrate как универсальный CLI; goose можно
+# собрать как свой образ (см. Dockerfile.migrate).
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrations
+  namespace: fizcultor
+  annotations:
+    # Force-re-run при каждом apply: добавь sha-аннотацию в overlay.
+    fizcultor/checksum: "REPLACE_BY_OVERLAY"
+spec:
+  ttlSecondsAfterFinished: 86400 # авточистка через 24h
+  backoffLimit: 3
+  template:
+    metadata:
+      labels: {app: migrations}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: goose
+          image: ghcr.io/virsi/fizcultor-bot/migrations:dev
+          imagePullPolicy: IfNotPresent
+          # Применяет goose-миграции для всех 4 БД.
+          # Образ собирается из backend/Dockerfile.migrate:
+          #   FROM golang:1.23-alpine AS build
+          #   RUN go install github.com/pressly/goose/v3/cmd/goose@latest
+          #   FROM alpine:3.19
+          #   COPY --from=build /go/bin/goose /usr/local/bin/
+          #   COPY backend/migrations /migrations
+          #   ENTRYPOINT ["/entrypoint.sh"]
+          command: [sh, -c]
+          args:
+            - |
+              set -e
+              for db in auth_db bmstu_db filter_db teachers_db; do
+                echo "=== migrate $db ==="
+                goose -dir /migrations/$db \
+                  postgres "postgres://fizcultor:${POSTGRES_PASSWORD}@postgres:5432/${db}?sslmode=disable" \
+                  up
+              done
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fizcultor-secrets
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits:   {cpu: 200m, memory: 128Mi}

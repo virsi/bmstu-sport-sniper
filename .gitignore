@@ -5,6 +5,12 @@
 *.pem
 *.key
 
+# Kubernetes (kubeconfig содержит cert + token — НИКОГДА не коммитить)
+k8s.cluster.yaml
+*.kubeconfig
+kubeconfig*
+.kube/
+
 # Go
 bin/
 *.exe

@@ -1,0 +1,229 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "uid": "fizcultor-containers",
+  "title": "fizcultor — containers (cAdvisor)",
+  "tags": ["fizcultor", "containers", "cadvisor"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "container",
+        "label": "container",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(container_last_seen{name!=\"\"}, name)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {"selected": false, "text": "All", "value": "$__all"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Running containers",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "targets": [{"expr": "count(container_last_seen{name!=\"\"} > (time() - 30))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Total container memory",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "targets": [{"expr": "sum(container_memory_usage_bytes{name!=\"\"})", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "options": {"colorMode": "value", "graphMode": "area", "textMode": "value"}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Total container CPU (cores)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "sum(rate(container_cpu_usage_seconds_total{name!=\"\"}[1m]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 2}},
+      "options": {"colorMode": "value", "graphMode": "area", "textMode": "value"}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Disk I/O total (Bps)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "targets": [
+        {"expr": "sum(rate(container_fs_reads_bytes_total{name!=\"\"}[1m]) + rate(container_fs_writes_bytes_total{name!=\"\"}[1m]))", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "Bps"}},
+      "options": {"colorMode": "value", "graphMode": "area", "textMode": "value"}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "CPU usage per container (cores)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 4},
+      "targets": [
+        {
+          "expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name!=\"\", name=~\"$container\"}[1m]))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 3}},
+      "options": {"legend": {"displayMode": "table", "showLegend": true, "calcs": ["mean", "max", "lastNotNull"]}, "tooltip": {"mode": "multi"}}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "CPU throttling (seconds throttled / s)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 4},
+      "targets": [
+        {
+          "expr": "sum by (name) (rate(container_cpu_cfs_throttled_seconds_total{name!=\"\", name=~\"$container\"}[5m]))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "options": {"legend": {"displayMode": "table", "showLegend": true, "calcs": ["mean", "max"]}}
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Memory usage per container",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 13},
+      "targets": [
+        {
+          "expr": "sum by (name) (container_memory_usage_bytes{name!=\"\", name=~\"$container\"})",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "options": {"legend": {"displayMode": "table", "showLegend": true, "calcs": ["mean", "max", "lastNotNull"]}}
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Memory limit utilization (%)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 13},
+      "targets": [
+        {
+          "expr": "100 * sum by (name) (container_memory_usage_bytes{name!=\"\", name=~\"$container\"}) / clamp_min(sum by (name) (container_spec_memory_limit_bytes{name!=\"\", name=~\"$container\"}), 1)",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "max": 100, "min": 0}},
+      "options": {"legend": {"displayMode": "table", "showLegend": true, "calcs": ["max"]}}
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Disk I/O read per container",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
+      "targets": [
+        {
+          "expr": "sum by (name) (rate(container_fs_reads_bytes_total{name!=\"\", name=~\"$container\"}[1m]))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "Bps"}}
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Disk I/O write per container",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 22},
+      "targets": [
+        {
+          "expr": "sum by (name) (rate(container_fs_writes_bytes_total{name!=\"\", name=~\"$container\"}[1m]))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "Bps"}}
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Network rx (per container)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 30},
+      "targets": [
+        {
+          "expr": "sum by (name) (rate(container_network_receive_bytes_total{name!=\"\", name=~\"$container\"}[1m]))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "Bps"}}
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Network tx (per container)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 30},
+      "targets": [
+        {
+          "expr": "sum by (name) (rate(container_network_transmit_bytes_total{name!=\"\", name=~\"$container\"}[1m]))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "Bps"}}
+    },
+    {
+      "id": 50,
+      "type": "table",
+      "title": "Top-10 memory consumers",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 38},
+      "targets": [
+        {
+          "expr": "topk(10, sum by (name) (container_memory_usage_bytes{name!=\"\"}))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}}
+    },
+    {
+      "id": 51,
+      "type": "table",
+      "title": "Top-10 CPU consumers (cores)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 38},
+      "targets": [
+        {
+          "expr": "topk(10, sum by (name) (rate(container_cpu_usage_seconds_total{name!=\"\"}[5m])))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 3}}
+    }
+  ]
+}

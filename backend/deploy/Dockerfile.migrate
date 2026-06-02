@@ -1,0 +1,16 @@
+# Migrations image — goose CLI + backend/migrations/.
+# Запускается как Job в k8s (см. _/k8s/base/migrations-job.yaml).
+#
+# Build (контекст = backend/):
+#   docker build -f backend/deploy/Dockerfile.migrate -t fizcultor/migrations:dev backend
+
+FROM golang:1.23-alpine AS build
+RUN go install github.com/pressly/goose/v3/cmd/goose@v3.22.1
+
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates
+COPY --from=build /go/bin/goose /usr/local/bin/goose
+COPY migrations /migrations
+ENV PATH=/usr/local/bin:$PATH
+ENTRYPOINT ["/bin/sh", "-c"]
+CMD ["echo 'usage: goose -dir /migrations/<db> postgres <DSN> up'"]

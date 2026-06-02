@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fizcultor
+  labels:
+    app.kubernetes.io/part-of: fizcultor
+    name: fizcultor

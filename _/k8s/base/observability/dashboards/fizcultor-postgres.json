@@ -1,0 +1,256 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "uid": "fizcultor-postgres",
+  "title": "fizcultor — postgres",
+  "tags": ["fizcultor", "postgres", "database"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "datname",
+        "label": "database",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(pg_database_size_bytes, datname)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {"selected": false, "text": "All", "value": "$__all"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Postgres up",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [{"expr": "pg_up", "refId": "A"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "green", "value": 1}
+            ]
+          },
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "DOWN"}, "1": {"text": "UP"}}}
+          ]
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Active connections",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "targets": [{"expr": "sum(pg_stat_activity_count)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Max connections",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "targets": [{"expr": "pg_settings_max_connections", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Total DB size",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "targets": [{"expr": "sum(pg_database_size_bytes{datname=~\"$datname\"})", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Cache hit ratio",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(rate(pg_stat_database_blks_hit{datname=~\"$datname\"}[5m])) / clamp_min(sum(rate(pg_stat_database_blks_hit{datname=~\"$datname\"}[5m]) + rate(pg_stat_database_blks_read{datname=~\"$datname\"}[5m])), 1)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 0.95},
+              {"color": "green", "value": 0.99}
+            ]
+          }
+        }
+      },
+      "options": {"colorMode": "background"}
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Deadlocks (last 1h)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "targets": [{"expr": "sum(increase(pg_stat_database_deadlocks{datname=~\"$datname\"}[1h]))", "refId": "A"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          }
+        }
+      },
+      "options": {"colorMode": "background"}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Connections by state",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [
+        {
+          "expr": "sum by (state) (pg_stat_activity_count)",
+          "legendFormat": "{{state}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Connections per database",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [
+        {
+          "expr": "sum by (datname) (pg_stat_activity_count{datname=~\"$datname\"})",
+          "legendFormat": "{{datname}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Transaction rate (commit/rollback)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "targets": [
+        {
+          "expr": "sum by (datname) (rate(pg_stat_database_xact_commit{datname=~\"$datname\"}[1m]))",
+          "legendFormat": "{{datname}} commit",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (datname) (rate(pg_stat_database_xact_rollback{datname=~\"$datname\"}[1m]))",
+          "legendFormat": "{{datname}} rollback",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Tuples — fetched / inserted / updated / deleted",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "targets": [
+        {"expr": "sum(rate(pg_stat_database_tup_fetched{datname=~\"$datname\"}[1m]))", "legendFormat": "fetched", "refId": "A"},
+        {"expr": "sum(rate(pg_stat_database_tup_inserted{datname=~\"$datname\"}[1m]))", "legendFormat": "inserted", "refId": "B"},
+        {"expr": "sum(rate(pg_stat_database_tup_updated{datname=~\"$datname\"}[1m]))", "legendFormat": "updated", "refId": "C"},
+        {"expr": "sum(rate(pg_stat_database_tup_deleted{datname=~\"$datname\"}[1m]))", "legendFormat": "deleted", "refId": "D"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Database size",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "targets": [
+        {
+          "expr": "pg_database_size_bytes{datname=~\"$datname\"}",
+          "legendFormat": "{{datname}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}}
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Conflicts / temp files / locks",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+      "targets": [
+        {"expr": "sum by (datname) (rate(pg_stat_database_conflicts{datname=~\"$datname\"}[5m]))", "legendFormat": "{{datname}} conflicts", "refId": "A"},
+        {"expr": "sum by (datname) (rate(pg_stat_database_temp_files{datname=~\"$datname\"}[5m]))", "legendFormat": "{{datname}} temp_files", "refId": "B"},
+        {"expr": "sum by (mode) (pg_locks_count)", "legendFormat": "{{mode}} locks", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Cache hit ratio over time",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 28},
+      "targets": [
+        {
+          "expr": "rate(pg_stat_database_blks_hit{datname=~\"$datname\"}[1m]) / clamp_min(rate(pg_stat_database_blks_hit{datname=~\"$datname\"}[1m]) + rate(pg_stat_database_blks_read{datname=~\"$datname\"}[1m]), 1)",
+          "legendFormat": "{{datname}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "DB query latency p95 (Go-сервисы — pkg/metrics)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, service, query) (rate({__name__=~\".+_db_query_duration_seconds_bucket\"}[5m])))",
+          "legendFormat": "{{service}}/{{query}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    }
+  ]
+}

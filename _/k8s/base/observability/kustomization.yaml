@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fizcultor
+
+resources:
+  - prometheus.yaml
+  - grafana.yaml
+  - exporters.yaml
+
+# Dashboards: переиспользуем JSON из backend/deploy/grafana/dashboards/.
+# Каждый файл становится ключом в ConfigMap, монтируется в Grafana как
+# отдельный JSON в /var/lib/grafana/dashboards.
+configMapGenerator:
+  - name: grafana-dashboards
+    files:
+      - fizcultor-overview.json=dashboards/fizcultor-overview.json
+      - fizcultor-system.json=dashboards/fizcultor-system.json
+      - fizcultor-containers.json=dashboards/fizcultor-containers.json
+      - fizcultor-postgres.json=dashboards/fizcultor-postgres.json
+      - fizcultor-nats.json=dashboards/fizcultor-nats.json
+      - fizcultor-business.json=dashboards/fizcultor-business.json
+    options:
+      # Без hash-суффикса, чтобы Volume ConfigMap-mount не ломался при
+      # rolling update Grafana.
+      disableNameSuffixHash: true

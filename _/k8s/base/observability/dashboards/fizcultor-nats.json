@@ -1,0 +1,208 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "uid": "fizcultor-nats",
+  "title": "fizcultor — NATS",
+  "tags": ["fizcultor", "nats", "messaging"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "NATS up",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [{"expr": "up{job=\"nats\"}", "refId": "A"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]
+          },
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "DOWN"}, "1": {"text": "UP"}}}
+          ]
+        }
+      },
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Active connections",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "targets": [{"expr": "gnatsd_varz_connections", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Subscriptions",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "targets": [{"expr": "gnatsd_varz_subscriptions", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Slow consumers",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "targets": [{"expr": "gnatsd_varz_slow_consumers", "refId": "A"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]
+          }
+        }
+      },
+      "options": {"colorMode": "background"}
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "In-msgs/s",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "targets": [{"expr": "rate(gnatsd_varz_in_msgs[1m])", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "ops"}},
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Out-msgs/s",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "targets": [{"expr": "rate(gnatsd_varz_out_msgs[1m])", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "ops"}},
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Message throughput (in/out)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [
+        {"expr": "rate(gnatsd_varz_in_msgs[1m])", "legendFormat": "in_msgs/s", "refId": "A"},
+        {"expr": "rate(gnatsd_varz_out_msgs[1m])", "legendFormat": "out_msgs/s", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Bytes throughput (in/out)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [
+        {"expr": "rate(gnatsd_varz_in_bytes[1m])", "legendFormat": "in_bytes/s", "refId": "A"},
+        {"expr": "rate(gnatsd_varz_out_bytes[1m])", "legendFormat": "out_bytes/s", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "Bps"}}
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Connections / subscriptions",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "targets": [
+        {"expr": "gnatsd_varz_connections", "legendFormat": "connections", "refId": "A"},
+        {"expr": "gnatsd_varz_subscriptions", "legendFormat": "subscriptions", "refId": "B"},
+        {"expr": "gnatsd_varz_routes", "legendFormat": "routes", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "NATS memory + CPU",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "targets": [
+        {"expr": "gnatsd_varz_mem", "legendFormat": "memory bytes", "refId": "A"},
+        {"expr": "gnatsd_varz_cpu", "legendFormat": "cpu %", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "JetStream streams — messages",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "targets": [
+        {
+          "expr": "gnatsd_jsz_stream_messages",
+          "legendFormat": "{{stream_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "JetStream streams — bytes on disk",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+      "targets": [
+        {
+          "expr": "gnatsd_jsz_stream_bytes",
+          "legendFormat": "{{stream_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}}
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "JetStream consumers — pending / ack pending",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 28},
+      "targets": [
+        {
+          "expr": "gnatsd_jsz_consumer_num_pending",
+          "legendFormat": "{{consumer_name}} pending",
+          "refId": "A"
+        },
+        {
+          "expr": "gnatsd_jsz_consumer_num_ack_pending",
+          "legendFormat": "{{consumer_name}} ack_pending",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "JetStream consumers — redelivered (anomaly indicator)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28},
+      "targets": [
+        {
+          "expr": "rate(gnatsd_jsz_consumer_num_redelivered[5m])",
+          "legendFormat": "{{consumer_name}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    }
+  ]
+}

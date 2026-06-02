@@ -165,6 +165,125 @@ services:
       nats:
         condition: service_started
 
+  # ---------- Observability ----------
+  # Включается тем же compose, что и приложения — `make up` поднимает всё.
+  # Dev-конфиг проще, чем prod: не read-only, без resource limits, без
+  # отдельного nodename label. Дашборды и scrape-config — те же.
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - fizcultor-net
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - fizcultor-net
+    depends_on:
+      - prometheus
+
+  # На macOS Docker Desktop mount propagation `rslave` не поддерживается
+  # (path / is not a shared or slave mount) — для dev монтируем `:ro` без
+  # propagation. Filesystem-метрики будут отражать VM Docker Desktop, не
+  # реальный mac — этого достаточно для дашбордов и проверки запросов.
+  # В prod (Linux хост) — см. docker-compose.prod.yaml с `:ro,rslave`.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    pid: host
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+      - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+    ports:
+      - "9100:9100"
+    networks:
+      - fizcultor-net
+
+  # cAdvisor — на macOS Docker Desktop запускается в VM, docker.sock проксится
+  # через `/var/run/docker.sock`. `--docker_only` снят: cgroups контейнеров
+  # доступны через systemd-factory (raw) даже без рабочей Docker-factory.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    privileged: true
+    command:
+      - --housekeeping_interval=15s
+      - --disable_metrics=disk,udp,sched,process,hugetlb,tcp,advtcp,referenced_memory,cpu_topology,resctrl
+    volumes:
+      - /:/rootfs:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    devices:
+      - /dev/kmsg
+    ports:
+      - "8081:8080"
+    networks:
+      - fizcultor-net
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: "host=postgres port=5432 user=${POSTGRES_USER:-fizcultor} password=${POSTGRES_PASSWORD:-fizcultor} dbname=postgres sslmode=disable"
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
+      PG_EXPORTER_EXCLUDE_DATABASES: "template0,template1"
+    ports:
+      - "9187:9187"
+    networks:
+      - fizcultor-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  nats-exporter:
+    image: natsio/prometheus-nats-exporter:0.15.0
+    restart: unless-stopped
+    command:
+      - -varz
+      - -jsz=all
+      - -connz
+      - -subz
+      - -channelz
+      - -port=7777
+      - http://nats:8222
+    ports:
+      - "7777:7777"
+    networks:
+      - fizcultor-net
+    depends_on:
+      - nats
+
 networks:
   fizcultor-net:
     driver: bridge
@@ -173,3 +292,5 @@ volumes:
   postgres-data:
   caddy-data:
   caddy-config:
+  prometheus-data:
+  grafana-data:

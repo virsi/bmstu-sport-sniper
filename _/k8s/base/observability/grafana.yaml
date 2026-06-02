@@ -1,0 +1,132 @@
+# Grafana с provisioning Prometheus datasource + 6 дашбордов из ConfigMap.
+# Дашборды НЕ inline здесь — `dashboards-cm.yaml` создан скриптом из
+# backend/deploy/grafana/dashboards/*.json (см. _/k8s/README.md).
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: fizcultor
+data:
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.fizcultor.svc:9090
+        isDefault: true
+        editable: false
+        jsonData:
+          timeInterval: "15s"
+          httpMethod: "POST"
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: fizcultor
+        orgId: 1
+        folder: ''
+        type: file
+        disableDeletion: false
+        editable: true
+        updateIntervalSeconds: 30
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: fizcultor
+spec:
+  selector: {app: grafana}
+  ports:
+    - {name: http, port: 3000, targetPort: 3000}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: fizcultor
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: grafana}}
+  template:
+    metadata:
+      labels: {app: grafana}
+    spec:
+      securityContext:
+        fsGroup: 472
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.3.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: GF_SECURITY_ADMIN_USER, value: admin}
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fizcultor-secrets
+                  key: GRAFANA_ADMIN_PASSWORD
+            - {name: GF_USERS_ALLOW_SIGN_UP, value: "false"}
+            - {name: GF_AUTH_ANONYMOUS_ENABLED, value: "false"}
+            - {name: GF_SERVER_ROOT_URL, value: "https://fizcultor.ru/grafana/"}
+            - {name: GF_SERVER_SERVE_FROM_SUB_PATH, value: "true"}
+          ports:
+            - {name: http, containerPort: 3000}
+          readinessProbe:
+            httpGet: {path: /api/health, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /api/health, port: http}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/grafana}
+            - {name: provisioning-ds, mountPath: /etc/grafana/provisioning/datasources}
+            - {name: provisioning-db, mountPath: /etc/grafana/provisioning/dashboards}
+            - {name: dashboards, mountPath: /var/lib/grafana/dashboards}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits:   {cpu: 500m, memory: 256Mi}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 472
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: grafana-data
+        - name: provisioning-ds
+          configMap:
+            name: grafana-provisioning
+            items:
+              - {key: datasource.yaml, path: prometheus.yaml}
+        - name: provisioning-db
+          configMap:
+            name: grafana-provisioning
+            items:
+              - {key: dashboards.yaml, path: fizcultor.yaml}
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: fizcultor
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi

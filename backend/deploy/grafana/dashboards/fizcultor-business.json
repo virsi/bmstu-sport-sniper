@@ -1,0 +1,206 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "uid": "fizcultor-business",
+  "title": "fizcultor — business KPI",
+  "tags": ["fizcultor", "business", "kpi"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {"from": "now-24h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Registrations (24h)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [{"expr": "sum(increase(auth_register_total{result=\"ok\"}[24h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Logins (24h)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "targets": [{"expr": "sum(increase(auth_logins_total{result=\"ok\"}[24h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Failed logins (24h)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "targets": [
+        {"expr": "sum(increase(auth_logins_total{result=~\"wrong_password|not_found|error\"}[24h]))", "refId": "A"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 50},
+              {"color": "red", "value": 200}
+            ]
+          }
+        }
+      },
+      "options": {"colorMode": "background"}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "BMSTU links (24h)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "targets": [{"expr": "sum(increase(bmstu_login_attempts_total{result=\"ok\"}[24h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Alerts sent (24h)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "targets": [{"expr": "sum(increase(notifier_sent_total{result=\"ok\"}[24h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "SSE connections (now)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "targets": [{"expr": "gateway_sse_connections", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Registrations / logins / login failures (rate)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(auth_register_total[5m]))",
+          "legendFormat": "register/{{result}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (result) (rate(auth_logins_total[5m]))",
+          "legendFormat": "login/{{result}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "BMSTU login outcomes (rate)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(bmstu_login_attempts_total[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Poller — cycle duration p50 / p95 / p99",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(poller_cycle_duration_seconds_bucket[10m])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(poller_cycle_duration_seconds_bucket[10m])))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(poller_cycle_duration_seconds_bucket[10m])))", "legendFormat": "p99", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Poller — users polled by result",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(poller_users_polled_total[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Notifier — sent by channel (TG / SSE)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "targets": [
+        {
+          "expr": "sum by (channel, result) (rate(notifier_sent_total[5m]))",
+          "legendFormat": "{{channel}}/{{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "BMSTU session age (active sessions, p50/p95)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(bmstu_session_age_seconds_bucket[5m])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(bmstu_session_age_seconds_bucket[5m])))", "legendFormat": "p95", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Poller cycles per hour",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 28},
+      "targets": [
+        {"expr": "sum(rate(poller_cycles_total[1h])) * 3600", "legendFormat": "cycles/hour", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "LKS API outcomes (BMSTU side)",
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28},
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(bmstu_api_requests_total[5m]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+# Prod overlay — image tags (resolved CI to sha), replicas, всё для
+# fizcultor.ru. По умолчанию ничего особо не патчим — base уже годен.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Image-теги в base установлены `:dev`. Здесь подменяются на полный SHA
+# из CI. Локально можно `kustomize edit set image ...:<sha>`.
+images:
+  - {name: ghcr.io/virsi/fizcultor-bot/auth-svc, newTag: latest}
+  - {name: ghcr.io/virsi/fizcultor-bot/bmstu-svc, newTag: latest}
+  - {name: ghcr.io/virsi/fizcultor-bot/filter-svc, newTag: latest}
+  - {name: ghcr.io/virsi/fizcultor-bot/teachers-svc, newTag: latest}
+  - {name: ghcr.io/virsi/fizcultor-bot/notifier-svc, newTag: latest}
+  - {name: ghcr.io/virsi/fizcultor-bot/poller-svc, newTag: latest}
+  - {name: ghcr.io/virsi/fizcultor-bot/gateway-svc, newTag: latest}
+  - {name: ghcr.io/virsi/fizcultor-bot/frontend, newTag: latest}
+  - {name: ghcr.io/virsi/fizcultor-bot/migrations, newTag: latest}
+
+# Always pull в проде, чтобы рестарт пода всегда тянул свежее.
+patches:
+  - target: {kind: Deployment, name: ".*"}
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always

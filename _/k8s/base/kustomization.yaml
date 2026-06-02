@@ -1,0 +1,31 @@
+# Base kustomization. Overlay prod добавляет: image tags, replicas patch,
+# resources patch, поды без readOnlyRootFilesystem там где нужно.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fizcultor
+
+resources:
+  - namespace.yaml
+  - configmap-shared.yaml
+  # Secret НЕ включаем сюда — создаётся kubectl create secret отдельно
+  # (см. _/k8s/README.md). secrets.template.yaml — справочник полей.
+  - traefik.yaml
+  - postgres.yaml
+  - nats.yaml
+  - auth-svc.yaml
+  - bmstu-svc.yaml
+  - filter-svc.yaml
+  - teachers-svc.yaml
+  - notifier-svc.yaml
+  - poller-svc.yaml
+  - gateway-svc.yaml
+  - frontend-nginx.yaml
+  - migrations-job.yaml
+  - ingressroute.yaml
+  - observability
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: fizcultor
+    includeSelectors: false

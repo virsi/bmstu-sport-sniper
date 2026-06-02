@@ -1,0 +1,44 @@
+# Общие env-переменные для всех Go-сервисов (не секреты).
+# Секреты см. _/k8s/base/secrets.template.yaml + kubectl create secret.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fizcultor-config
+  namespace: fizcultor
+data:
+  APP_ENV: prod
+  LOG_LEVEL: info
+
+  # Внутренние gRPC-адреса (имя_сервиса:9090 через k8s DNS).
+  AUTH_GRPC_ADDR: auth-svc:9090
+  BMSTU_GRPC_ADDR: bmstu-svc:9090
+  FILTER_GRPC_ADDR: filter-svc:9090
+  NOTIFIER_GRPC_ADDR: notifier-svc:9090
+  TEACHERS_GRPC_ADDR: teachers-svc:9090
+
+  # NATS внутри кластера.
+  NATS_URL: nats://nats:4222
+
+  # Gateway → браузер: cookie с домена fizcultor.ru, secure=true (HTTPS).
+  COOKIE_SECURE: "true"
+  COOKIE_DOMAIN: fizcultor.ru
+  CORS_ALLOWED_ORIGINS: https://fizcultor.ru
+
+  # JWT / argon2id / rate-limit — дефолты подходят prod.
+  JWT_ACCESS_TTL_SECONDS: "900"
+  JWT_REFRESH_TTL_SECONDS: "2592000"
+  RATE_LIMIT_RPS: "10"
+  RATE_LIMIT_BURST: "20"
+
+  # SSE
+  SSE_TICKET_TTL: 5m
+
+  # BMSTU
+  LKS_BASE_URL: https://lks.bmstu.ru
+  OIDC_USE_BROWSER: "false"
+  HTTP_CLIENT_TIMEOUT_SECONDS: "15"
+
+  # Telegram-бот
+  BOT_USERNAME: FizcultorBot
+
+  # Poller интервал см. в poller-svc cmd/server/main.go env POLL_INTERVAL
