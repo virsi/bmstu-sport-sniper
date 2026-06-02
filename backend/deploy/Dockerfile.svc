@@ -20,21 +20,29 @@ RUN apk add --no-cache git ca-certificates tzdata
 
 WORKDIR /src
 
-# Сначала копируем workspace + go.mod'ы, чтобы кэшировать deps.
+# Сначала копируем workspace + ВСЕ go.mod (только stubs).
+# go.work ссылается на все модули — без хотя бы пустых go.mod
+# go workspace падает при resolution. Подробности: ../CLAUDE.md.
 COPY go.work go.work
-COPY pkg/go.mod pkg/go.mod
-COPY pkg/go.sum pkg/go.sum
-COPY services/${SERVICE}/go.mod services/${SERVICE}/go.mod
-COPY services/${SERVICE}/go.sum services/${SERVICE}/go.sum
+COPY pkg/go.mod pkg/go.sum pkg/
+COPY gen/go.mod gen/go.sum gen/
+COPY tests/testhelpers/go.mod tests/testhelpers/go.sum tests/testhelpers/
+COPY services/auth-svc/go.mod services/auth-svc/go.sum services/auth-svc/
+COPY services/bmstu-svc/go.mod services/bmstu-svc/go.sum services/bmstu-svc/
+COPY services/filter-svc/go.mod services/filter-svc/go.sum services/filter-svc/
+COPY services/gateway-svc/go.mod services/gateway-svc/go.sum services/gateway-svc/
+COPY services/notifier-svc/go.mod services/notifier-svc/go.sum services/notifier-svc/
+COPY services/poller-svc/go.mod services/poller-svc/go.sum services/poller-svc/
+COPY services/teachers-svc/go.mod services/teachers-svc/go.sum services/teachers-svc/
 
-# Заранее скачиваем модули (через workspace + per-module).
+# Скачиваем модули нужного сервиса (workspace replace pointers).
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    cd pkg && go mod download && \
-    cd /src/services/${SERVICE} && go mod download
+    cd services/${SERVICE} && go mod download
 
-# Копируем исходники.
+# Копируем исходники нужного сервиса + всё на что он ссылается через replace.
 COPY pkg/ pkg/
+COPY gen/ gen/
 COPY services/${SERVICE}/ services/${SERVICE}/
 
 # Сборка статического бинарника.
